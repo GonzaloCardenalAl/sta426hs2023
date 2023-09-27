@@ -1,0 +1,58 @@
+---
+title: "Exercise 1 - Gonzalo Cardenal"
+format: html
+editor: visual
+---
+
+
+>**_TASK:_**
+Using quarto and R, create an executable HTML document with R code that samples 100 values from a log-normal distribution (see the rlnorm function; you can use mu=5, sigma=0.5); using the ggplot2 package, create a histogram of the sampled data on both the linear and log scales; create also a violin plot; within your quarto document, write 1-2 sentences to describe your steps and organize the document with subsection headings; report the mean and standard deviation of your sampled values in line in the text. Always show your code (i.e., do not hide when the HTML is built).
+
+### Sampling values
+We sample the values with the function *rlnorm* and report the mean and standard deviation.
+```{r}
+set.seed(12345)
+samples <- rlnorm(100, meanlog = 5, sdlog = 0.5)
+df <- data.frame(values = samples)
+mean_samples <- mean(samples)
+std_dev_samples <- sd(samples)
+cat("Mean:", mean_samples, "\n")
+cat("Standard Deviation:", std_dev_samples, "\n")
+```
+
+### Plotting
+We first load the library ggplot2
+```{r}
+library(ggplot2)
+```
+#### Histograms
+Create the histogram in linear scale:
+```{r}
+linear_histogram <- ggplot(df, aes(x = samples)) + 
+  geom_histogram(binwidth = 1, fill= "green", color="black") + 
+  labs(title = "Histogram (Linear Scale)", x = "Values", y = "Frequency")
+linear_histogram
+```
+
+and then we create the histogram in logaritmic scale:
+```{r}
+log_histogram <- ggplot(df, aes(x = log(samples))) +
+  geom_histogram(binwidth = 0.7, fill = "blue", color="black")+
+  scale_x_continuous(labels = scales::scientific, breaks = scales::trans_breaks("log10", function(x) 10^x)) +
+  labs(title = "Histogram (Log Scale)", x = "Log Values", y = "Frequency")
+log_histogram
+```
+
+finally the violin plot:
+```{r}
+violin_plot <- ggplot(df, aes(x="", y = samples)) +
+  geom_violin(fill = "red", color = "black", alpha = 0.7) +
+  labs(title = "Violin Plot", x = "", y = "Values")
+violin_plot
+```
+
+and display the three plots together:
+```{r}
+library(gridExtra)
+grid.arrange(linear_histogram, log_histogram, violin_plot, ncol = 2)
+```
