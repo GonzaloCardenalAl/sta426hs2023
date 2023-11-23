@@ -1,0 +1,296 @@
+---
+title: "Exercise 06"
+author: "Gonzalo Cardenal Antolin"
+date: today
+format:
+  html:
+    self-contained: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(ggplot2)
+library(pheatmap)
+library(tidyr)
+```
+
+## Comparison of Expression Estimates
+
+The data set consists for 3 Normal samples and 3 Treated samples with 2.5 Mio reads each. The reads are simulated to come from genes on the human chromosome 1.
+
+The expression values from featureCounts were created with:
+We use the library `Rsubread` to generate the counts
+```{r, eval=FALSE}
+library(Rsubread)
+countResult1 = featureCounts(..., strandSpecific=0,
+                                 GTF.featureType="exon", GTF.attrType="gene_id", useMetaFeatures=TRUE,
+                                 allowMultiOverlap=TRUE, countMultiMappingReads=FALSE)
+save(countResult1, file="countResult1.RData")
+countResult2 = featureCounts(..., strandSpecific=0,
+                                 GTF.featureType="exon", GTF.attrType="gene_id", useMetaFeatures=TRUE,
+                                 allowMultiOverlap=TRUE, countMultiMappingReads=TRUE, fraction=TRUE)
+save(countResult2, file="countResult2.RData")
+```
+
+The RSEM data were generated with
+```{sh, eval=FALSE}
+rsem-calculate-expression .... --calc-pme --calc-ci --strandedness none ...
+```
+For documentation see: http://deweylab.github.io/RSEM/rsem-calculate-expression.html
+
+
+
+## Exercises
+
+### 1. Depending on the featureCount mode, how many alignments are ignored during counting?  
+Data files exist in two modes: without MultiMappingReads or with MultiMappingReads and Fraction.
+```{r}
+cr1 <- readRDS("countResult1.RDS")
+cr2 <- readRDS("countResult2.RDS")
+
+cr1_unassigned <- sum(colSums(cr1$stat[-1,-1]))
+cr2_unassigned <- sum(colSums(cr2$stat[-1,-1]))
+```
+The number of alignments ignored for the non-multimapping reads is `r cr1_unassigned` whereas for the multimapping mode was `r cr2_unassigned`.
+
+Also we can observe total ignored alignments each sample:
+```{r}
+colSums(cr1$stat[-1,-1]) #for the non-multimapping
+colSums(cr2$stat[-1,-1]) #for the multimapping
+```
+
+
+### 2. Compare the counts from featureCounts with the genelevel counts from RSEM. Which genes have different values?
+We gather all the samples in a unique dataset.
+```{r}
+#Load the gene data from RSEM
+rsem_gN1 <- read.table('RSEM_counts/N1.genes.results', header = TRUE)
+rsem_gN2 <- read.table('RSEM_counts/N2.genes.results', header = TRUE)
+rsem_gN3 <- read.table('RSEM_counts/N3.genes.results', header = TRUE)
+rsem_gT1 <- read.table('RSEM_counts/T1.genes.results', header = TRUE)
+rsem_gT2 <- read.table('RSEM_counts/T2.genes.results', header = TRUE)
+rsem_gT3 <- read.table('RSEM_counts/T3.genes.results', header = TRUE)
+
+sample_names <- colnames(cr1$stat)[-1]
+
+rsem <- data.frame(
+  rsem_gN1 = rsem_gN1['expected_count'],
+  rsem_gN2 = rsem_gN2['expected_count'],
+  rsem_gN3 = rsem_gN3['expected_count'],
+  rsem_gT1 = rsem_gT1['expected_count'],
+  rsem_gT2 = rsem_gT2['expected_count'],
+  rsem_gT3 = rsem_gT3['expected_count']
+)
+colnames(rsem) <- sample_names
+rownames(rsem) <- rsem_gN3$gene_id
+
+cr_counts <- cr1$counts 
+cr_multimap_counts <-cr2$counts 
+
+#we order based in the genes id names
+rsem = rsem[rownames(cr_counts),]
+```
+
+Now that we have a comparable ordered dataset, we compare the data from featureCounts non-multimapping and RSEM.
+```{r}
+percentage_unequal<- (sum(rsem != cr_counts))/(dim(rsem)[1]*dim(rsem)[2])
+paste("The percentage of unequal total counts taking into account each sample individually is", round(percentage_unequal,3))
+```
+The way we compute the percentage gives us the amount of counts that are unequal for all the genes taking into account each sample independently. So comparison is one to one. We could also compare conditioned that for all the samples (each row) the counts are the same. This will output a higher percentage, as the condition is harder to meet. 
+
+The genes ids with different counts for at least one sample are present in the following list:
+```{r}
+comparison_result <- rsem == cr_counts
+all_true_rows <- rowSums(comparison_result) == ncol(comparison_result)
+genes_unequal <- rownames(rsem)[!all_true_rows]
+head(genes_unequal,100)
+```
+There are a total of `r length(genes_unequal)` genes with different counts. The percentage for gene ids with different counts for at least one sample is `r length(genes_unequal)/dim(cr_counts)[1]`.
+
+Now we plot the distribution of the unequal counts and compare it to the equal ones.
+```{r}
+unequal_counts = table(cr_counts[rsem != cr_counts])
+equal_counts = table(cr_counts[rsem == cr_counts])
+
+barplot_equal_counts = ggplot(data.frame(equal_counts), aes(x = Var1, y = Freq)) + 
+  geom_bar(stat = 'identity') +
+  labs(title = "Distribution of the equal counts between featureCounts and RSEM", x = "Counts", y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+print(barplot_equal_counts)
+
+```
+```{r}
+barplot_unequal_counts = ggplot(data.frame(unequal_counts), aes(x = Var1, y = Freq)) + 
+  geom_bar(stat = 'identity') +
+  labs(title = "Distribution of the unequal counts between featureCounts and RSEM", x = "Counts", y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+print(barplot_unequal_counts)
+```
+Looking at both plots we can observe that the majority of equal counts are for genes with lower or 0 counts, whereas different counts between methods are more likely to occur for higher counts (genes with higher expression). 
+
+*Now we run the same procedure against the multimapping mode.*
+
+```{r}
+rsem = rsem[rownames(cr_multimap_counts),]
+percentage_unequal_mm<- (sum(rsem != cr_multimap_counts))/(dim(rsem)[1]*dim(rsem)[2])
+paste("The percentage of unequal total counts taking into account all the samples is ", round(percentage_unequal_mm,3))
+```
+```{r}
+comparison_result_mm <- rsem == cr_multimap_counts
+all_true_rows_mm <- rowSums(comparison_result_mm) == ncol(comparison_result_mm)
+genes_unequal_mm <- rownames(rsem)[!all_true_rows_mm]
+head(genes_unequal_mm,100)
+```
+For the multimapping mode, there are a total of `r length(genes_unequal_mm)` genes with different counts.The percentage for gene ids with different counts for at least one sample is `r length(genes_unequal_mm)/dim(cr_counts)[1]`.
+
+```{r}
+unequal_counts = table(cr_multimap_counts[rsem != cr_multimap_counts])
+equal_counts = table(cr_multimap_counts[rsem == cr_multimap_counts])
+
+barplot_equal_counts = ggplot(data.frame(equal_counts), aes(x = Var1, y = Freq)) + 
+  geom_bar(stat = 'identity') +
+  labs(title = "Distribution of the equal counts between multimapping-featureCounts and RSEM", x = "Counts", y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+print(barplot_equal_counts)
+
+```
+
+```{r}
+barplot_unequal_counts = ggplot(data.frame(unequal_counts), aes(x = Var1, y = Freq)) + 
+  geom_bar(stat = 'identity') +
+  labs(title = "Distribution of the unequal counts between multimapping-featureCounts and RSEM", x = "Counts", y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+print(barplot_unequal_counts)
+```
+The same observation also holds, where the tendency is that for lower or 0 counts values are the same, meanwhile for longer counts datasets have different amounts of counts.
+
+### 3. How does the sum of the counts in RSEM compare to the number of the aligned reads?
+
+To compare the total sum of the counts to the aligned reads we create another dataset with the aligned reads.
+```{r}
+total_counts_rsem <- colSums(rsem)
+total_counts_rsem
+
+#Load the aligned data from RSEM
+rsem_aN1 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/N1.stat/N1.cnt', n=1), split = " "
+)))
+rsem_aN2 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/N2.stat/N2.cnt', n=1), split = " "
+)))
+rsem_aN3 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/N3.stat/N3.cnt', n=1), split = " "
+)))
+
+rsem_aT1 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/T1.stat/T1.cnt', n=1), split = " "
+)))
+rsem_aT2 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/T2.stat/T2.cnt', n=1), split = " "
+)))
+rsem_aT3 <- as.numeric(unlist(strsplit(
+  readLines('RSEM_counts/T3.stat/T3.cnt', n=1), split = " "
+)))
+
+rsem_aligned <- data.frame(
+  rsem_aN1 = rsem_aN1[2],
+  rsem_aN2 = rsem_aN2[2],
+  rsem_aN3 = rsem_aN3[2],
+  rsem_aT1 = rsem_aT1[2],
+  rsem_aT2 = rsem_aT2[2],
+  rsem_aT3 = rsem_aT3[2]
+)
+colnames(rsem_aligned) <- sample_names
+
+percentage_aligned <- rsem_aligned/total_counts_rsem
+difference_aligned <- rsem_aligned-total_counts_rsem
+difference_aligned
+```
+```{r}
+percentage_aligned 
+```
+
+```{r}
+aligned_df = gather(rsem_aligned, key='Samples',value ='Aligned_counts')
+aligned_df$total_counts = colSums(rsem)
+ggplot(data = aligned_df,
+       mapping = aes(x = total_counts, y = Aligned_counts , color = Samples)) +
+  geom_point() +
+  labs(title = "Sum RSEM counts vs. number aligned counts", 
+       x = "Total counts", 
+       y = "Sum of aligned counts")+
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+theme(plot.title = element_text(hjust = 0.5))
+```
+
+The difference and the percentage indicate the amount of aligned sequences is slightly above the amount of total counts, although this difference is minimum. This could indicate some counts have been aligned to more than one gene. In the plot we could also observe sample are slightly above the line.
+
+### 4. Compute pair-wise correlation of the samples based on the isoform counts and gene level counts
+We first compute the pair-wise correlation for gene level counts:
+```{r}
+correlation_genes <- cor(rsem)
+pheatmap(correlation_genes)
+```
+
+Then, for the isoform level:
+```{r}
+#Load the isoform data from RSEM
+rsem_iN1 <- read.table('RSEM_counts/N1.isoforms.results', header = TRUE)
+rsem_iN2 <- read.table('RSEM_counts/N2.isoforms.results', header = TRUE)
+rsem_iN3 <- read.table('RSEM_counts/N3.isoforms.results', header = TRUE)
+rsem_iT1 <- read.table('RSEM_counts/T1.isoforms.results', header = TRUE)
+rsem_iT2 <- read.table('RSEM_counts/T2.isoforms.results', header = TRUE)
+rsem_iT3 <- read.table('RSEM_counts/T3.isoforms.results', header = TRUE)
+
+sample_names <- colnames(cr1$stat)[-1]
+
+rsem_isoforms <- data.frame(
+  rsem_iN1 = rsem_iN1['expected_count'],
+  rsem_iN2 = rsem_iN2['expected_count'],
+  rsem_iN3 = rsem_iN3['expected_count'],
+  rsem_iT1 = rsem_iT1['expected_count'],
+  rsem_iT2 = rsem_iT2['expected_count'],
+  rsem_iT3 = rsem_iT3['expected_count']
+)
+colnames(rsem_isoforms) <- sample_names
+rownames(rsem_isoforms) <- rsem_iN3$transcript_id
+
+correlation_transcripts <- cor(rsem_isoforms)
+pheatmap(correlation_transcripts)
+```
+In both heatmaps the correlations are high between all the three normal samples and each other and the three treated samples and its replicates.
+
+Finally, we can also do it for the aggregated isoforms of each gene.
+```{r}
+
+rsem_isoforms$gene_id <- rsem_iN3$gene_id
+
+rsem_iN1_sum <- aggregate(STAR_mapped.N1.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+rsem_iN2_sum <- aggregate(STAR_mapped.N2.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+rsem_iN3_sum <- aggregate(STAR_mapped.N3.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+rsem_iT1_sum <- aggregate(STAR_mapped.T1.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+rsem_iT2_sum <- aggregate(STAR_mapped.T2.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+rsem_iT3_sum <- aggregate(STAR_mapped.T3.bam ~ gene_id, data = rsem_isoforms, FUN = sum)
+
+rsem_isoforms_sum <- data.frame(
+  rsem_iN1_sum[,2], rsem_iN2_sum[,2], rsem_iN3_sum[,2], rsem_iT1_sum[,2], rsem_iT2_sum[,2], rsem_iT3_sum[,2]
+)
+colnames(rsem_isoforms_sum) <- sample_names
+
+#because we reordered rsem before, we define it again to do the correlation
+rsem <- data.frame(
+  rsem_gN1 = rsem_gN1['expected_count'],
+  rsem_gN2 = rsem_gN2['expected_count'],
+  rsem_gN3 = rsem_gN3['expected_count'],
+  rsem_gT1 = rsem_gT1['expected_count'],
+  rsem_gT2 = rsem_gT2['expected_count'],
+  rsem_gT3 = rsem_gT3['expected_count']
+)
+
+correlation_iso_genes<- cor(rsem_isoforms_sum, rsem)
+pheatmap(correlation_iso_genes)
+```
+Aggregated isoforms corralate with genes again between normal samples and each other and treated samples and each other.
