@@ -1,0 +1,101 @@
+---
+title: "Exercise 05"
+author: "Gonzalo Cardenal Antolin (GonzaloCardenalAl)"
+date: today
+format:
+  html:
+    self-contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Mapping in practice
+
+Check the online available manuals for the mappers
+
+* bowtie2  
+* STAR  
+
+and answer the questions
+
+-   How do these mappers score alignments?
+
+    In the case of *bowtie2*, the alignment is score by subtracting the penalties for each difference (missmatch, gap, etc.) and, when performing local alignment also adds bonuses for each match. It allows to configure the scores of each different case (match, mismatch, gap\...).\
+    In end-to-end alignment, penalties are assigned for mismatches and gaps, resulting in a final score. The best possible score is 0, indicating a perfect match. By default, a mismatched base at a high-quality position in the read receives a penalty of -6. A length-2 read gap receives a penalty of -11 (-5 for the gap open, -3 for the first extension, -3 for the second extension).
+
+    In local alignment, mismatches and gaps incur penalties, but matching bases receive a bonus. The best possible score in local mode is determined by the match bonus. By default, a base that matches receives a bonus of +2 and the scores from global alignment mainteins. Valid alignments must meet or exceed a minimum score threshold, which varies based on alignment mode and read length. These thresholds are customizable using the "\--score-min" option.
+
+    For *STAR*, the algorithm has a more complex functioning as it is also focused in detecting splicing junctions. It identifies short seed sequences in reads, typically 20-31 nucleotides long, that match the reference genome. It then seeks exact or near-exact matches for these seeds.It uses a scoring scheme that assigns scores to different types of alignment events (its scoring scheme is different). These include matches (M), mismatches (MM), insertions (I), deletions (D), and splices (N). It assigns higher scores to confidently supported splice sites. Also, users can set a parameter for the maximum allowed mismatches in seed alignments.
+
+-   What reporting options are available?
+
+    *bowtie2* offers three reporting modes for handling alignments. The default mode seeks distinct, valid alignments for each read and continues searching for better ones, providing an estimate of mapping quality (the MAPQ SAM field). It does not guarantee the best alignment score. The "-k" mode looks for up to a specified number of distinct alignments (N) for each read, reporting them in descending order by score. Supplementary alignments are marked, and it's useful when interested in the number of alignments or if a read aligns rather than their precise origins. The "-a" mode is like "-k" but has no upper limit on reported alignments, making it useful for tools designed with this mode in mind, but it can be slow for very large genomes.
+
+    In *STAR*, it differenciates between unique mappers or multimappers. There are several different features that provide control and flexibility of the outputted alignments. The "\--outSAMmultNmax" parameter limits the number of output alignments (SAM lines) for multi-mappers. For example, \--outSAMmultNmax 1 will output exactly one SAM line for each mapped read. If \--outSAMmultNmax is set to -1, all alignments are output according to the order specified in \--outMultimapperOrder. With --outFilterMultimapNmax N you can filter out multi-mapping reads. This parameter restricts the output to reads that are mapped to a maximum of N loci.
+
+
+## Mapping with R
+
+Use the Rsubread package to map a read file found at http://fgcz-gstore.uzh.ch/public/Yeast_Reads/
+
+
+```{r, eval=FALSE}
+BiocManager::install("Rsubread", update=FALSE)
+BiocManager::install("BSgenome.Scerevisiae.UCSC.sacCer3", update=FALSE)
+
+# download the a read data file
+dir.create("~/Yeast_example")
+setwd("/Users/gonuni/Library/Mobile Documents/com~apple~CloudDocs/CBB/1st Semester/Statistical Bioinformatics/exercise_5/Yeast_example")
+download.file("http://fgcz-gstore.uzh.ch/public/Yeast_Reads/20170313.A-G1_R1-sub.fastq.gz", "G1_R1-sub.fastq.gz")
+
+
+```
+
+
+
+```{r, message=FALSE ,eval=FALSE}
+library("BSgenome")
+library("BSgenome.Scerevisiae.UCSC.sacCer3")
+library("Rsubread")
+```
+
+Use the commands *export* to export method in the *BSgenome* package to write the genome as a fasta file on the local disk. Use the commands *buildindex* and *align* of the *Rsubread* package to map the reads. Consult the help pages of the respective functions. Build the index so that at most 2GB of RAM is used. Run the alignment with 4 threads. If you computer has less resources, adapt accordingly.
+
+*Export the genome as fasta file in the local disk*
+```{r,  eval=FALSE}
+genome <- BSgenome.Scerevisiae.UCSC.sacCer3
+out1_file <- file.path(getwd(), "Yeast_genome.fasta")
+export(genome, out1_file, compress=FALSE, compression_level=NA, verbose=TRUE)
+```
+
+```{r, eval=FALSE}
+buildindex("Yeast_index","Yeast_genome.fasta",memory = 2000)
+```
+
+```{r}
+readfile1 = file.path(getwd(),"/Yeast_example/G1_R1-sub.fastq.gz")
+nthreads = 4
+align.stat <- Rsubread::align(file.path(getwd(),"/Yeast_index"), readfile1 , nthreads=nthreads)
+```
+
+## Questions
+
+*What is the fraction of reads aligned (unique and multi-mappers) of the reads?*
+```{r}
+fraction_aligned <- align.stat["Mapped_reads",] / align.stat["Total_reads",]
+
+print(paste("The fraction of reads aligned from all reads is", as.character(round(fraction_aligned,4))))
+```
+*How does this mapping rate change if you trim 5 bases of both ends?*
+```{r}
+align.stat_trim <- Rsubread::align(file.path(getwd(),"/Yeast_index"), readfile1, nTrim5 = 5 , 
+                              nTrim3 = 5 ,nthreads=nthreads)
+
+fraction_aligned_trim <-  align.stat_trim["Mapped_reads",] / align.stat["Total_reads",]
+print(paste("The fraction of reads aligned from all reads with trimmed ends is", as.character(round(fraction_aligned_trim,4))))
+```
+
+As we can observe, the mapping rate is higher for the trimmed ends. This result makes sense as shorter reads are more likely to match with the reference genome.
+
