@@ -1,0 +1,281 @@
+---
+title: "Exercise 4"
+author: "Gonzalo Cardenal (GonzaloCardenalAl)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r }
+library(limma) # replace this with packages you will use
+library(ggplot2)
+library(pheatmap)
+library(ROCR)
+```
+
+## Run some things
+
+```{r }
+nGenes <- 10000                   # number of "features"
+nSamples <- 6                     # number of samples (split equal in 2 groups)
+pDiff <- .1                       # percent of genes "differential"
+grp <- rep(0:1,each=nSamples/2)   # dummy variable for exp. group
+trueFC <- 2                       # log-fold-change of truly DE
+
+d0 <- 1. #degrees of freedom
+s0 <- 0.8
+sd <- s0*sqrt(d0/rchisq(nGenes,df=d0))  # dist'n of s.d.
+
+y <- matrix(rnorm(nGenes*nSamples,sd=sd),
+            nr=nGenes,nc=nSamples)
+
+indD <- 1:floor(pDiff*nGenes)
+diff <- sample(c(-1,1),max(indD),replace=TRUE)*trueFC
+y[indD,grp==1] <- y[indD,grp==1] + diff
+```
+
+## Question 1
+
+*First, do an exploratory analysis of the true (simulated) and observed (calculated from data) variances. For the observed variances, compute the residual variance for each row of y (i.e., pooled variance of the two groups of simulated samples, not the row-wise variance; see the denominator of the classical two-sample t-statistic) and look at the distribution of them, of the true variances (from the simulated sd) and make a scatter plot of true versus observed. Often, viewing variances on the log scale is preferred.*
+
+```{r}
+truevar=sd**2
+
+#We compute residual variance
+rvar <- numeric(nrow(y))
+for (i in 1:nrow(y)){
+  g0 <- y[i, grp == 0]
+  g1 <- y[i, grp == 1]
+  
+  var0 <- var(g0)
+  var1 <- var(g1)
+  
+  n0 <- sum(grp == 0)
+  n1 <- sum(grp == 1)
+  
+  pooledvar <- ((n0 -1)*var0 + (n1 -1)* var1)/ (n0 + n1 -2)
+  rvar[i] <- pooledvar
+}
+
+variance_df <- data.frame(TrueVar = truevar, ObservedVar = rvar)
+
+ggplot(variance_df, aes(x = log(TrueVar), y = log(ObservedVar))) +
+          geom_point() +
+          labs(x = "Log(True Variance)", y = "Log(Observed Variance)") + 
+          ggtitle("True vs Observed Variance") +
+          theme(plot.title = element_text(hjust = 0.5))
+```
+
+In the plot we can observe the observed variance is higher as we introduced differential expression.
+
+## Question 2
+
+*Produce a visualization that demonstrates that you understand the "differential expression" that we introduced into the simulation. There are many possibilities; use your creativity.*
+
+We can plot a heatmap of the average normalised expression of each gene for each group.
+
+```{r}
+normalised_g0 <- rowMeans(y[,grp == 0])
+normalised_g1 <- rowMeans(y[,grp == 1])
+
+normalised_g0[normalised_g0 > 3] = 3
+normalised_g0[normalised_g0 < -3] = -3
+normalised_g1[normalised_g1 > 3] = 3
+normalised_g1[normalised_g1 < -3] = -3
+
+averaged_expression_df <- data.frame(Baseline = normalised_g0,
+                                      DifferentialExpression = normalised_g1)
+
+pheatmap(averaged_expression_df, show_rownames = FALSE, treeheight_row = 50, treeheight_col = 30, fontsize = 6, main = "Gene Expression Values Baseline vs. Differential Expression (added to first 1000 genes")
+```
+
+In the heatmap we can clearly see the difference of two Fold change in the expression values between each group. For the first 1000 genes, expression values are flipped. Values were cropped to [-3,3] to be able to visualize the differences in the presence of outliers.
+
+## Question 3
+
+Next, we create a design matrix to represent the linear model to be fitted (to each row of the table):
+
+```{r}
+(design <- model.matrix(~grp))
+```
+
+*In practical terms, what is the interpretation of the two columns of the design matrix with the parameterization shown above?* 
+
+The number of rows is equivalent to the number of samples for each group, and the two columns determined the meaning that each parameter of the linear model will have. Because the first column is 1 and the second 0, the ß1 will mean the average expression of group 0. For the second group the parameter will denote the change between the group 1 (DE)- group 0. The linear model will fit and have each own parameters for each gene. This type of design matrix is based on the "Mean-reference model".
+
+## Question 4
+
+```{r}
+fit <- lmFit(y,design)
+fit <- eBayes(fit)
+
+names(fit)
+
+cols <- rep("non-differential",nrow(y))
+cols[indD] <- "differential"
+
+df <- data.frame(feature=1:length(cols),
+                 t=fit$t[,2],
+                 status=cols)
+
+ggplot(df, aes(x=feature, y=t, colour=status)) + 
+  geom_point() + ylim(-10,10)
+
+```
+
+*For each row (each feature in the experiment) of y, calculate the classical 2-sample t-test. See ?t.test for more details about the built-in R function to do this calculation and convince yourself which arguments to use to match the classical t-test described in the lecture. Add a visualization similar to the above plot for the classical t-statistic and the log-fold-change (mean difference of the 2 groups). By eye, which statistic best separates the truly differential from non-differential?*
+
+We run a two-sample t-test with unique variance
+
+```{r}
+t <-numeric(nrow(y))
+for (i in 1:nrow(y)){
+  ttest <-  t.test(x= y[i, grp == 0], y= y[i, grp == 1], var.equal = TRUE)
+  t[i] <- ttest$statistic
+}
+meandiff <- rowMeans(y[,grp == 1]) - rowMeans(y[, grp == 0])
+df_classicfit <- data.frame(feature=1:length(cols),
+                 t=t,
+                 FC = meandiff,
+                 status=cols)
+
+ggplot(df_classicfit, aes(x=feature, y=t, colour=status)) +
+  geom_point() +
+  ylim(-10,10)
+
+ggplot(df_classicfit, aes(x=feature, y=FC, colour=status)) +
+  geom_point() +
+  ylim(-4, +4) +
+  geom_hline(yintercept=2) +
+  geom_hline(yintercept = -2)
+  
+```
+
+Both statistics, although substantially noisy, allow to visualize differential expression. In the the case of the log-fold-change the DE can be seen slightly easier by eye, as we can see the points denoting differential expression are between +2,-2.
+
+## Question 5
+
+*Pick a reasonable metric to compare the methods, such as an ROC curve, false discovery plot, power versus achieved FDR. Using this metric / curve, formally compare the performance of the classical t-test (calculated in Question 4), the moderated t-test (plotted above) and the log-fold-change or mean difference (fit\$coef). Two packages that are useful for these kind of plots include: ROCR or iCOBRA.*
+
+```{r}
+# create the predictions
+pred_classic <- prediction(abs(df_classicfit$t), df_classicfit$status, label.ordering = c("non-differential", "differential"))
+pred_moderated <- prediction(abs(df$t), df$status, label.ordering = c("non-differential", "differential"))
+pred_FC <- prediction(abs(df_classicfit$FC), df_classicfit$status, label.ordering = c("non-differential", "differential"))
+
+#get the metrics
+perf_classic <- performance(pred_classic, "tpr", "fpr")
+perf_moderated <- performance(pred_moderated, "tpr", "fpr")
+perf_FC <- performance(pred_FC, "tpr", "fpr")
+
+#AUC of each method
+AUC_classic <-  performance(pred_classic, "auc")
+AUC_moderated <-performance(pred_moderated, "auc")
+AUC_FC <- performance(pred_FC, "auc")
+
+print(paste("The AUC values where:", round(AUC_classic@y.values[[1]],3), round(AUC_moderated@y.values[[1]],3), round(AUC_FC@y.values[[1]],3), "for Classic t-test, Moderated t-test and Log-Folg-Change respectively"))
+
+#plot the ROCs
+plot(perf_classic, col = "blue", main = "ROC Curve for Classic vs. Moderated T-Test vs. Log-Fold-Change")
+plot(perf_moderated, col = "red", add = TRUE)
+plot(perf_FC, col="green", add= TRUE)
+
+# Add a legend to the plot
+legend("bottomright", legend = c("Classic T-Test", "Moderated T-Test", "Log-Fold-Change"), col = c("blue", "red", "green"), lty = 1)
+```
+
+The AUC values obtained indicate that the Moderated t-test yields the best predictions, followed by the Classic t-test and the Log-Fold-Change.  However, when examining the plot, the Log-Fold-Change performs better after surpassing the false positive rate (FPR) at around 0.23.
+
+## Question 6
+
+```{r}
+library("affy")
+library("preprocessCore")
+unzip("affy_estrogen.zip")
+ddir <- "affy_estrogen"
+dir(ddir)
+
+# preprocess affymetrix data
+targets <- readTargets("targets.txt", path=ddir)
+targets$time.h <- factor(targets$time.h)
+
+abatch <- ReadAffy(filenames=targets$filename,
+                   celfile.path=ddir)
+eset <- rma(abatch)  # bg correct, normalize, summarize
+
+mds <- plotMDS( exprs(eset), plot = FALSE)  # MDS plot
+
+df <- data.frame(MDS1 = mds$x, MDS2 = mds$y,
+                 treatment = targets$estrogen,
+                 time.h = targets$time.h)
+ggplot(df, aes(x = MDS1, y = MDS2, shape=treatment, colour=time.h)) +
+  geom_point(size = 4)
+
+# do the limma modeling
+f <- paste0(targets$estrogen, targets$time.h)
+f <- factor(f)
+
+# create design matrix
+design <- model.matrix(~0+f)
+colnames(design) <- levels(f)
+design
+#Fit the model
+fit <- lmFit(eset, design)
+#Create contrast matrix
+cont.matrix <- makeContrasts(E10="present10-absent10",
+                             E48="present48-absent48",
+                             Time="absent48-absent10",levels=design)
+cont.matrix
+
+#Fit contrast matrix
+fit2  <- contrasts.fit(fit, cont.matrix)
+fit2  <- eBayes(fit2)
+class(fit2)
+names(fit2)
+
+#Summarize the differential expression statistics
+topTable(fit2, coef=1, n=5)
+topTable(fit2, coef=2, n=5)
+
+#Plot for one gene expression
+df <- cbind(df, expr = exprs(eset)["39642_at",])
+df$condition <- paste0(df$treatment, df$time.h)
+
+ggplot(df, aes(x = condition, y = expr, shape=treatment, colour=time.h)) +
+  geom_point(size = 4)
+```
+
+*From the matrix of summarized Affymetrix data that went into the limma pipeline in the first place (exprs(eset)), manually calculate the logFC and AveExpr for one of the top differentially expressed features.*
+
+```{r}
+contrast_df = as.data.frame(topTable(fit2, coef=1, n = 100000))
+contrast_df = contrast_df[order(contrast_df$P.Value),]
+head(contrast_df)
+```
+
+As highlighted by the statistics (t, P.value, adj.P.value and B), the gene 39642_at is the top differentially expressed feature between treated and untreated sample after 10 min. And thereby, we compute its mean and logFC.
+
+```{r}
+GE_df = as.data.frame(eset)
+top_DE_gen = GE_df$X39642_at
+
+average_g0 = mean(top_DE_gen[1:2])
+average_g1 = mean(top_DE_gen[3:4])
+logFC = average_g1 - average_g0
+logFC
+
+mean(top_DE_gen)
+```
+\`\`\`{}
