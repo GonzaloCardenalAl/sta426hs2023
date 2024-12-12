@@ -1,0 +1,402 @@
+---
+title: "Exercise 7"
+author: "Gonzalo Cardenal Antolin (GonzaloCardenalAl)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+
+```{r }
+library(limma) # replace this with packages you will use
+library(UpSetR)
+library("affy")
+library("preprocessCore")
+library(ggplot2)
+library("edgeR")
+```
+
+
+## Question 1
+
+*Using the estrogen dataset from Exercise 4, create an UpSet plot summarizing the numbers of differentially expressed genes for the 3 contrasts: ‘E10’, ‘E48’ and ‘Time’ (contrasts as defined in Exercise 4 using makeContrasts()). Hint: you can use decideTests() to summarize the results, given some thresholds. UpSet plots are the new Venn diagrams and can be created with the UpSetR package.*
+
+
+
+```{r }
+ddir <- "affy_estrogen"
+dir(ddir)
+
+# preprocess affymetrix data
+targets <- readTargets("targets.txt", path=ddir)
+targets$time.h <- factor(targets$time.h)
+
+abatch <- ReadAffy(filenames=targets$filename,
+                   celfile.path=ddir)
+eset <- rma(abatch)  # bg correct, normalize, summarize
+
+mds <- plotMDS( exprs(eset), plot = FALSE)  # MDS plot
+
+df <- data.frame(MDS1 = mds$x, MDS2 = mds$y,
+                 treatment = targets$estrogen,
+                 time.h = targets$time.h)
+ggplot(df, aes(x = MDS1, y = MDS2, shape=treatment, colour=time.h)) +
+  geom_point(size = 4)
+
+# do the limma modeling
+f <- paste0(targets$estrogen, targets$time.h)
+f <- factor(f)
+
+# create design matrix
+design <- model.matrix(~0+f)
+colnames(design) <- levels(f)
+design
+#Fit the model
+fit <- lmFit(eset, design)
+#Create contrast matrix
+cont.matrix <- makeContrasts(E10="present10-absent10",
+                             E48="present48-absent48",
+                             Time="absent48-absent10",levels=design)
+cont.matrix
+
+#Fit contrast matrix
+fit2  <- contrasts.fit(fit, cont.matrix)
+fit2  <- eBayes(fit2)
+class(fit2)
+names(fit2)
+
+#Get DE genes with default threshold value
+DEgenes<- as.data.frame(decideTests(fit2))
+
+
+#Separate the downregulated genes and the upregulated genes 
+DEgenesupregulated <- DEgenes
+DEgenesupregulated <- DEgenesupregulated == 1
+col_genesupregulated <- c("E10UpReg", "E48UpReg", "TimeUpReg")
+colnames(DEgenesupregulated) <- col_genesupregulated
+
+DEgenesdownregulated <- DEgenes
+DEgenesdownregulated  <- DEgenesdownregulated == -1
+col_genesdownregulated <- c("E10DownReg", "E48DownReg", "TimeDownReg")
+colnames(DEgenesdownregulated) <- col_genesdownregulated 
+
+DEgenesdif <- cbind(DEgenesupregulated, DEgenesdownregulated)
+
+DEgenesdif[DEgenesdif] = 1
+DEgenesdif[!DEgenesdif] = 0
+
+#Now we plot the upset
+upset(as.data.frame(DEgenesdif), sets = colnames(as.data.frame(DEgenesdif)), order.by = "freq")
+```
+
+We separate the downregulated genes and the upregulated in two different columns to be able to properly observe in the figure the intersection of sets separately. Individual points refer to each sample differential expressed genes, down and up regulated. Columns with connected lines represent those samples that have those same number of genes equally differentially expressed. E.g There are 57 differentially downregulated expressed genes between E10 and E48. This is interpret as the treat to these samples against the baseline manteins a differential expression over time.
+
+
+
+## Question 2
+
+*Again using the estrogen dataset from Exercise 4, reproduce the (limma) differential expression analysis using a different design matrix (i.e., a different parameterization; remember, the lectures discussed that differential expression is all about the combination of a design matrix and a contrast matrix). Hint: use the experimental factors defined in the ‘targets’ data frame. Note: trivial changes to the design matrix (e.g., switch the column order) will not be considered as a different design matrix (think: with or without an intercept would be considered a different parameterization, as discussed in the lectures).*
+
+
+
+```{r }
+# create design matrix
+design <- model.matrix(~f)
+colnames(design) <- levels(f)
+design
+#Fit the model
+fit <- lmFit(eset, design)
+#Create contrast matrix
+cont.matrix <- makeContrasts(E10="present10",
+                             E48="present48-absent48",
+                             Time="absent48",levels=design)
+cont.matrix
+
+```
+
+
+Now we change the first column of our design matrix to have all positive 1 values, so that the first two rows will output the baseline expression at time 10 "absent10" and then, every row is now a linear combination of the "absent10" + each. So then our parameters will represent already the differential value against the baseline and therefore we can design our contrast matrix like: (E10="present10", E48="present48-absent48",Time="absent48")
+
+
+```{r}
+#Fit contrast matrix
+fit2  <- contrasts.fit(fit, cont.matrix)
+fit2  <- eBayes(fit2)
+class(fit2)
+names(fit2)
+
+#Get DE genes with default threshold value
+DEgenes_alternative_design<- as.data.frame(decideTests(fit2))
+
+#Separate the downregulated genes and the upregulated genes 
+DEgenesupregulated <-DEgenes_alternative_design
+DEgenesupregulated <- DEgenesupregulated == 1
+col_genesupregulated <- c("E10UpReg", "E48UpReg", "TimeUpReg")
+colnames(DEgenesupregulated) <- col_genesupregulated
+
+DEgenesdownregulated <-DEgenes_alternative_design
+DEgenesdownregulated  <- DEgenesdownregulated == -1
+col_genesdownregulated <- c("E10DownReg", "E48DownReg", "TimeDownReg")
+colnames(DEgenesdownregulated) <- col_genesdownregulated 
+
+DEgenesdif_alternative_design <- cbind(DEgenesupregulated, DEgenesdownregulated)
+
+DEgenesdif_alternative_design[DEgenesdif_alternative_design] = 1
+DEgenesdif_alternative_design[!DEgenesdif_alternative_design] = 0
+
+#Now we plot the upset
+upset(as.data.frame(DEgenesdif_alternative_design), sets = colnames(as.data.frame(DEgenesdif_alternative_design)), order.by = "freq")
+```
+
+
+We can observe the plot is the same.
+
+# Question 3 
+
+We now switch to exploring two popular pipelines for differential expression of RNA-seq data, (already) given the counts. Details on the counting and/or of the transcript abundance estimation were covered in Lecture 6. The dataset used here is the well-known pasilla data, which compares the knockout of pasilla (a splicing factor) to a wild-type control, in Drosophila cells.
+
+In this exercise, some code will be given to get started, but you may need to consult the documentation to get working code. In all case, there are good resources on how to go through these fairly standard analysis pipelines (links below).
+
+First, we have the samples already organized into a table of metadata and this is used to list the filenames that contain the gene counts.
+
+
+```{r}
+samples <- read.table("data/samples.txt", header=TRUE,
+                      row.names=5, stringsAsFactors=FALSE)
+samples
+```
+
+Here, we read in the 7 count files and consolidate it into a single table – the readDGE() function simply saves us from having to do this manually:
+
+```{r}
+setwd("/Users/gonuni/Desktop/College/CBB/1st Semester/Statistical Bioinformatics/exercise_7/data/")
+counts <- readDGE(samples$countfile)$counts
+head(counts)
+```
+
+Here, we can trim the column names to get a ‘nice’ grouping variable to use in the design matrix:
+
+```{r}
+(grp <- gsub("\\-.[0-9]*","",colnames(counts)))
+```
+
+
+Below is a pipeline using likelihood-ratio tests that is adapted from Quick Start section, early in the edgeR user’s guide
+
+```{r, eval=FALSE}
+# NOT RUN
+group <- factor(c(1,1,2,2,2))
+y <- DGEList(counts=x,group=group)
+y <- calcNormFactors(y)
+design <- model.matrix(~group)
+
+y <- estimateDisp(y,design)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit,coef=2)
+topTags(lrt)
+```
+
+This will lead you to a list of putative/detected differentially expressed genes. Note that the code above is just an example and is not actually run in the script (i.e., you will need to modify it).
+
+*Fix the code above to work on the count table that was already read in. Add in some spot checks, including an MDS plot from plotMDS() (or similar), a look at the dispersion-mean plot using plotBCV() (or similar) and a look at the overall M vs A plot using plotSmear() (or similar).*
+
+We first look at the MDS plot
+
+```{r}
+mds <- plotMDS(counts, plot=FALSE)
+MDSdf <- data.frame(MDS1 = mds$x, MDS2 = mds$y, Treatment = grp)
+
+ggplot(MDSdf, aes(x = MDS1, y = MDS2, color = Treatment)) +
+  geom_point(size = 4) +
+  labs(title= "Multidimensional Scaling", x='Leading logFC dim 1 (99%)', y='Leading logFC dim 2 (1%)')+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Distances in the plots correlate to dissimilarities in the samples. 
+
+```{r}
+group <- grp
+y <- DGEList(counts=counts,group=group)
+y <- calcNormFactors(y)
+
+design <- model.matrix(~group)
+y <- estimateDisp(y,design)
+```
+
+
+Now we plot the biological coefficient of variation:
+
+```{r}
+plotBCV(y)
+```
+
+```{r}
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit,coef=2)
+topTags(lrt)
+```
+
+And finally the smear:
+
+```{r}
+plotSmear(lrt)
+```
+
+
+# Question 4
+
+*For the MDS plot, investigate what happens differently when you call plotMDS() on the DGEList object and when you call it on the normalized counts – for normalized counts, see the cpm() function. Explain why it is different. You may need to read the documentation or even read the code of the plotMDS.DGEList or plotMDS.default functions to understand the difference.*
+
+```{r}
+setwd("/Users/gonuni/Desktop/College/CBB/1st Semester/Statistical Bioinformatics/exercise_7/data/")
+counts <- readDGE(samples$countfile)$counts
+group <- grp
+
+plotMDS(counts)
+mds <- plotMDS.DGEList(counts, plot=FALSE)
+MDSdf <- data.frame(MDS1 = mds$x, MDS2 = mds$y, Treatment = grp, Type="DGElist object")
+
+```
+
+```{r}
+counts_norm <- cpm(counts)
+plotMDS(counts_norm)
+mds_norm <- plotMDS(counts_norm, plot=FALSE)
+MDSdf_norm <- data.frame(MDS1 = mds_norm$x, MDS2 = mds_norm$y, Treatment = grp, Type="Normalized counts")
+
+```
+
+```{r}
+MDStotaldf <- rbind(MDSdf,MDSdf_norm)
+
+ggplot(MDStotaldf, aes(x = MDS1, y = MDS2, color = Treatment, shape = Type)) +
+  geom_point(size = 4) +
+  labs(title= "Multidimensional Scaling: DGE list vs Normalized counts", x='MDS1', y='MD2')+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+By plotting them together we can observe the value range is extremely different. The reason for this is that if we apply DGEList to the counts it automatically converts the counts to log-counts-per-million with cpm(, log=TRUE). We can observe that by zooming in the same plot with the axes limited interval [-2,2].
+
+
+```{r}
+MDStotaldf <- rbind(MDSdf,MDSdf_norm)
+
+ggplot(MDStotaldf, aes(x = MDS1, y = MDS2, color = Treatment, shape = Type)) +
+  geom_point(size = 4) +
+  labs(title= "Multidimensional Scaling: DGE list vs Normalized counts axes limit:[-2,2]", x='MDS1', y='MD2')+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  xlim(-2, 2) +
+  ylim(-2, 2)
+
+```
+
+
+And we can validate that by plotting again and applying cpm with log=TRUE:
+
+```{r}
+counts_norm <- cpm(counts, log = TRUE)
+mds_norm <- plotMDS(counts_norm, plot=FALSE)
+MDSdf_norm <- data.frame(MDS1 = mds_norm$x, MDS2 = mds_norm$y, Treatment = grp, Type="Log Normalized counts")
+MDStotaldf <- rbind(MDSdf,MDSdf_norm)
+ggplot(MDStotaldf, aes(x = MDS1, y = MDS2, color = Treatment, shape = Type)) +
+  geom_point(size = 4) +
+  labs(title= "Multidimensional Scaling: DGE list vs Log Normalized counts", x='MDS1', y='MD2')+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+By changing cpm with Log normalized counts we obtain the same MDS plot.
+
+# Question 5
+
+As an alternative (to edgeR above), one can run through a standard limma-voom pipeline, such as:
+
+```{r, eval=FALSE}
+# NOT RUN
+v <- voom(d$counts, design=model.matrix(~grp), plot = TRUE)
+vf = lmFit(v, design = model.matrix(~grp))  # note similarity to limma
+                                            # analysis performed earlier
+vf = eBayes(vf)
+```
+
+
+*Again, the above code for voom is not run here. Fix this code to work with the count dataset above and then do some spot checks of the genes called DE. For example, make a plot of the estimated fold changes for the two methods (limma-voom and edgeR), compare the P-values of the two methods, or create a venn diagram of the called sets of DE genes at a set threshold.*
+
+
+```{r}
+
+v <- voom(DGEList(counts=counts, group= grp), design=model.matrix(~grp), plot = TRUE)
+vf = lmFit(v, design = model.matrix(~grp))  # note similarity to limma
+                                            # analysis performed earlier
+vf = eBayes(vf)
+
+#Plot estimated fold changes limma-voom vs edgeR
+topDE_vf <- topTable(vf, n = Inf)
+topDE_lrt <- topTags(lrt, n = Inf)
+topDE_lrt <- as.data.frame(topDE_lrt)
+#topDE_lrt <- topDE_lrt[rownames(topDE_vf),]
+topDE_vf <- topDE_vf[rownames(topDE_lrt),]
+
+top_DE_vf_logFC<- data.frame(genes = rownames(topDE_vf), logFC=topDE_vf$logFC, Method = 'Voom')
+top_DE_lrt_logFC<- data.frame(genes = rownames(topDE_vf),logFC=topDE_lrt$logFC, Method = 'EdgeR')
+logFCdf <- rbind(top_DE_vf_logFC, top_DE_lrt_logFC)
+
+ggplot(logFCdf, aes(x = genes, y= logFC,fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Comparison of LogFC from EdgeR and Voom",
+       x = "Gene IDs",
+       y = 'LogFC') +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+As we can observe in the bar plot, there is a tendency for EdgeR to get higher logFC than Limma voom.
+We can also observe that by plotting the logFC of each of them in a scatter plot:
+
+```{r}
+only_logFC <- data.frame(logFC_Voom=topDE_vf$logFC, logFC_EdgeR=topDE_lrt$logFC)
+ggplot(only_logFC, aes(x = logFC_Voom, y= logFC_EdgeR)) +
+  geom_point(fill = "blue", alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, color = "orange")+
+  labs(title = "Comparison of LogFC from EdgeR and Voom")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Here we can observe for small logFC the realationship between logFC for EdgeR and Limma Voom is 1:1 (the same). However, for larger logFC Edge R tends to give higher values (negative and positive). 
+
+```{r}
+#Compare the P-values limma-voom vs edgeR
+only_logP <- data.frame(negative_log_Pvalue_Voom=-log(topDE_vf$P.Val), negative_log_Pvalue_EdgeR=-log(topDE_lrt[,4]))
+ggplot(only_logP, aes(x = negative_log_Pvalue_Voom, y= negative_log_Pvalue_EdgeR)) +
+  geom_point(fill = "blue", alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, color = "orange")+
+  labs(title = "Comparison of -log(P-value) from EdgeR and Voom")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+By looking at the plot, EdgeR obtains smaller and, therefore, more signficant p-values than Voom.
+
+And finally, plotting the Venn Diagram:
+
+```{r}
+#Venn diagram of the called sets of DE genes at a set threshold
+only_P <- data.frame(Voom=topDE_vf$P.Val, EdgeR=topDE_lrt[,4])
+venn_c <- decideTests(as.matrix(only_P))
+x<-vennCounts(venn_c)
+vennDiagram(x)
+```
+
+The Venn Diagram confirms our observations before where EdgeR is getting higher amount of significant genes. 

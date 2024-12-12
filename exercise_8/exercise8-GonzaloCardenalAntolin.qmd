@@ -1,0 +1,258 @@
+---
+title: "Exercise XX"
+author: "Gonzalo Cardenal Antolin (GonzaloCardenalAl)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Load packages
+
+```{r }
+library(limma) # replace this with packages you will use
+library(ggplot2)
+library("edgeR")
+library(UpSetR)
+```
+
+## Question 1
+
+*Simulate data from the sine curve (from 0 to 2pi) with Gaussian noise added (as shown in the lecture). Try and “normalize” the sine curve data. That is, subtract the trend of the data, such that if the normalization succeeds, you are left with normally distributed data centred around zero. After this: i) make a plot of the normalized data; ii) make a plot of the difference between the truth (sine curve) and the loess/lowess estimate; iii) create a quantile-quantile (against Gaussian) plot of the normalized data. Comment on the results. Did your normalization work? Does it look (sufficiently) Gaussian? You may need to play with parameters to get a “good” lowess/loess estimate in the first place.*
+
+```{r}
+x <- runif(1000, 0, 2*pi)
+y <- sin(x) + rnorm(1000, sd = .3)
+
+plot(x,y)
+lines(lowess(y~x, f=2/3), col="blue", lwd=3)
+lines(lowess(y~x, f=1/3), col="black", lwd=3)
+lines(lowess(y~x, f=1/10), col="orange", lwd=3)
+```
+
+```{r}
+plot(x, sin(x), col="green", main = "Sin(x) against lowess estimates")
+lines(lowess(y~x, f=2/3), col="blue", lwd=3, legend.text="f=2/3")
+lines(lowess(y~x, f=1/3), col="black", lwd=3, legend.text="f=1/3")
+lines(lowess(y~x, f=1/5), col="red", lwd=3, legend.text="f=1/5")
+lines(lowess(y~x, f=1/10), col="orange", lwd=3, legend.text="f=1/10")
+
+legend("topright", legend=c("f=2/3", "f=1/3", "f=1/5","f=1/10", "sin(x)"), col=c("blue", "black", "red", "orange", "green"), lty=1, lwd=3)
+```
+In the plot above, we can observe that the best estimate is achieved by f=1/5, as it is the closest to the true sin curve. f=1/10 seems to also give a nice estimation but it does not fit as smoothly as f=1/5.
+
+We normalized the data by subtracting to the lowess estimate.
+```{r}
+normalized_data <- y - lowess(y~x, f=1/5)$y
+#sine_fit <- lm(y ~ sin(x))
+#normalized_data <- resid(sine_fit)
+plot(x, normalized_data, main = "Normalized Data")
+```
+The distribution of the data points 
+
+We plot an histogram to check for the distribution of the normalised data:
+```{r}
+hist(normalized_data, main = "Histogram of Normalized Data", col = "green", xlab = "Normalized Values", ylab = "Frequency", breaks = 30)
+```
+By looking at the histogram we observe data seems to be normally distributed around 0.
+
+```{r}
+shapiro.test(normalized_data)
+```
+The results of shapiro test gives us a small p-value which indicate that the data is not normally distributed. Therefore, we conclude the normalisation did not work sufficiently good. There are other methods that can give us a better normalization. E.g.
+```{r}
+sine_fit <- lm(y ~ sin(x))
+normalized_data_2 <- resid(sine_fit)
+plot(x, normalized_data_2, main = "Normalized Data 2")
+shapiro.test(normalized_data_2)
+hist(normalized_data_2, main = "Histogram of Normalized Data 2", col = "green", xlab = "Normalized Values", ylab = "Frequency", breaks = 30)
+```
+The shapiro test and the plot demostrate this normalisation method correctly normalise our data. Also the histogram resambles more to a gaussian distribution.
+
+```{r}
+lowess_estimate <- lowess(y~x, f=1/5)
+
+true_sin <- sin(x)[order(x)]
+lowess_estimate <- lowess_estimate$y[order(lowess_estimate$x)]
+difference_1 = abs(true_sin - lowess_estimate)
+hist(difference_1, breaks=50, main="Histogram:Difference between the truth (sine curve) and the lowess estimate", xlab = 'Difference lowess estimate(f = 1/5)')
+```
+Difference values are low indicating a good estimate to the true sin(x). 
+
+```{r}
+qqnorm(normalized_data_2, main = "Q-Q Plot against Gaussian Method 2", col = "blue", pch = 20)
+qqline(normalized_data_2, col = "red")
+```
+The qqplot enables the comparison of data distributions, and in this context qqnorm is employed to assess the normal distribution of our normalized data. The resulting plot indicates that the points align closely with the x = y line, suggesting that the data follows a normal distribution for our second method.
+
+```{r}
+qqnorm(normalized_data, main = "Q-Q Plot against Gaussian Method 1", col = "blue", pch = 20)
+qqline(normalized_data, col = "red")
+```
+For the normalisation method where we subtracted the estimate, we can observe the points does not align as precise indicating worst normalisation.
+
+## Question 2
+
+Next, we will revisit the analysis from Exercise 7 (pasilla dataset), to account for a covariate. In the second part, we will use (preprocessed) exon-level counts to look for changes in splicing.
+```{r}
+samples <- read.table("data/samples.txt", header=TRUE,
+                      row.names=5, stringsAsFactors=FALSE)
+```
+
+*Take the data from Exercise 7 and produce an MDS plot again, but this time colour the points according to the libtype covariate in the samples table: SE = single end, PE = paired end (i.e., a technical detail of the library construction); perhaps also label the points on the MDS plot using the shortname column to make them easy to distinguish. Comment on the relative positions of the samples.*
+```{r}
+setwd("/Users/gonuni/Desktop/College/CBB/1st Semester/Statistical Bioinformatics/exercise_8/data/")
+counts <- readDGE(samples$countfile)$counts
+(grp <- gsub("\\-.[0-9]*","",colnames(counts)))
+mds <- plotMDS(counts, plot=FALSE)
+MDSdf <- data.frame(MDS1 = mds$x, MDS2 = mds$y, libtype= samples$libtype, Treatment = grp, shortname = samples$shortname)
+MDSdf<-MDSdf[order(MDSdf$shortname),]
+
+ggplot(MDSdf, aes(x = MDS1, y = MDS2, color = libtype, shape = shortname )) +
+  geom_point(size = 4) +
+  labs(title= "Multidimensional Scaling", x='Leading logFC dim 1 (99%)', y='Leading logFC dim 2 (1%)')+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_shape_manual(values = c(1,2,3,4,1,2,3))
+
+```
+By looking at the MDS with the new color and shape labels, it can be seen the type of library (paired end vs single end) has a big influence on the logFC and its variability, as all PE are aggrupate together whereas SE samples are farly distributed. This covariate is working as a confound and therefore should be addressed. 
+
+## Question 3
+
+*Put a factor variable for the libtype covariate in the design matrix and redo the edgeR or limma differential expression analysis from Exercise 7 (i.e., include also the biological factor of interest, knockout state, in the design matrix). This now represents modeling where we are still interested in the knockout state, but the model now adjusts for the effects of libtype (with some assumptions). Compare the set of genes called DE from Exercise 7 (i.e., without accounting for the covariate) to this new analysis. Identify and plot (normalized) expression levels of a gene that is affected solely by library type (i.e., and not by knockout state).*
+
+```{r}
+group <- factor(grp)
+libtype <- factor(samples$libtype)
+y <- DGEList(counts=counts,group=group,libtype=libtype)
+y <- calcNormFactors(y)
+
+design <- model.matrix(~group + libtype)
+y <- estimateDisp(y,design)
+
+fit <- glmFit(y,design)
+lrt <- glmLRT(fit, coef = 2)
+DE_covariate <- as.data.frame(topTags(lrt, n=Inf))
+```
+
+We now compare the set of genes called DE from exercise 7:
+```{r}
+y <- DGEList(counts=counts,group=group)
+y <- calcNormFactors(y)
+design_ex7 <- model.matrix(~group)
+y_ex7 <- estimateDisp(y,design_ex7)
+
+fit_ex7 <- glmFit(y_ex7,design)
+lrt_ex7 <- glmLRT(fit_ex7, coef = 2)
+
+DE_covariate <- decideTests(lrt)
+DE_ex7 <- decideTests(lrt_ex7)
+df <- cbind(DE_covariate, DE_ex7)
+colnames(df) <- c("DE_covariate_addressed", "DE_ex7")
+df[df == -1] = 1
+upset(as.data.frame(df))
+```
+The new model finds 516 new differential expressed genes and 529 DE genes shared with the analysis from exercise 7. Unexpectedly, there were no genes uniquely DE for the model of exercise 7. 
+
+We could also compare against libtype by choosing coef=3:
+```{r}
+lrt <- glmLRT(fit, coef = 3)
+DE_covariate <- as.data.frame(topTags(lrt, n=Inf))
+DE_covariate <- decideTests(lrt)
+DE_ex7 <- decideTests(lrt_ex7)
+df <- cbind(DE_covariate, DE_ex7)
+df[df == -1] = 1
+upset(as.data.frame(df))
+```
+Now we are getting unique DE genes for exercise 7 model. However, this analysis and its respective Upset plot is not valid as we are comparing two different things.
+
+
+```{r}
+y <- DGEList(counts=counts,group=group,libtype=libtype)
+y <- calcNormFactors(y)
+
+design <- model.matrix(~libtype)
+y <- estimateDisp(y,design)
+
+fit <- glmFit(y,design)
+lrt_unique_libtype <- glmLRT(fit)
+
+DE_unique_covariate_gene <- as.data.frame(topTags(lrt_unique_libtype, n=Inf)[1,])
+DE_unique_covariate_gene_expression <- cpm(y$counts)[rownames(DE_unique_covariate_gene),]
+df_gene <- data.frame( sample = names(DE_unique_covariate_gene_expression), normalised_expression = DE_unique_covariate_gene_expression,
+                       libtype = libtype)
+
+ggplot(data = df_gene, aes(x = sample, y = normalised_expression, fill = libtype)) + 
+  geom_bar(stat="identity")+
+  labs(title="Expression of gene FBgn0013680 solely driven by libtype")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+In the plot, we can observe PE samples have almost the same value no matter weather they are untreated or not. In contrast, SE samples have much higher normalised expression values. This indicates expression in this gene is solely driven by libtype.
+
+
+## Question 4
+
+Next, we will explore “differential splicing”, using the same pasilla dataset, but here we will instead use exon-level summaries of the data (as mentioned in lectures). Some extra background on getting this data can be found in the DEXSeq documentation.
+
+```{r, message=FALSE}
+library(pasilla)
+(sdir <- file.path(system.file(package="pasilla"), "extdata"))
+dir(sdir)
+```
+
+```{r}
+anno <- file.path(sdir, "Dmel.BDGP5.25.62.DEXSeq.chr.gff")
+
+samplesX = data.frame(cond = rep( c("trt","untrt"), c(3,4) ),
+                      type = c("SE","PE","PE","SE","SE","PE","PE"),
+                      countfile = dir(sdir,pattern="fb.txt"),
+                      stringsAsFactors = TRUE)
+samplesX
+```
+Below is some unevaluated code that represents a standard DEXSeq pipeline (the code will not run as is; you will need to make some modifications):
+```{r, eval=FALSE}
+library(DEXSeq)
+dxd <- DEXSeqDataSetFromHTSeq(
+           countfiles=file.path( sdir, filename ),
+           sampleData = samples,
+           design = ~ sample + exon + type:exon + condition:exon)
+
+dxd <- estimateSizeFactors(dxd)
+dxd <- estimateDispersions(dxd)
+dxd <- testForDEU(dxd)
+dxr <- DEXSeqResults(dxd)
+```
+Refer to the DEXSeq vignette or the documentation for further details.
+
+*Fix the above code to run a standard DEXSeq analysis and plot one of the top differentially spliced genes – for example, see the plotDEXSeq() function. As discussed in the lecture, the model should find genes that show a departure from parallelism in terms of their exon-level counts.*
+
+```{r, message=FALSE}
+library(DEXSeq)
+#Setting 
+dxd <- DEXSeqDataSetFromHTSeq(
+           countfiles=file.path( sdir, samplesX$countfile ),
+           sampleData = samplesX,
+           design = ~ sample + exon + type:exon + cond:exon,
+           flattenedfile = anno)
+
+dxd <- estimateSizeFactors(dxd)
+dxd <- estimateDispersions(dxd)
+dxd <- testForDEU(dxd)
+dxr <- DEXSeqResults(dxd)
+```
+
+```{r}
+dxr_sorted <- dxr[order(dxr$padj),]
+top_DSgene<- dxr_sorted$groupID[2]
+#Plot the differentially spliced gene
+plotDEXSeq(dxr, geneID = top_DSgene, legend=TRUE, fitExpToVar = "cond")
+```
+By looking at the expression of the exons, we can observe there is a differential splicing between the treated and the untreated samples. Expression of exons E001-E004&E008 are higher for treated version, whereas between E005-E007&E009-E0011 exon expression is higher for untreated.

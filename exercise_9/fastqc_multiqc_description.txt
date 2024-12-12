@@ -1,0 +1,9 @@
+Looking at the MultiQC report, we can observe some general statistics where results were good. 99.8% of the reads were aligned and 1,1% trimmed. There were around 25% of duplications in each sample. The alignment scores are high with the higher alignment score for WT-Chir-3_R1. We can see Cutadapt trimmed a high amount of sequences smaller than 10bp. And for the FastQC, samples passed the quality checks for most of the sections.
+The last section gives a general summary of the quality checks status. Here we can observe all the samples fail in the Per base sequence content, and gives warning in the Per sequence GC content and Sequence Length distance. Besides these sections, the data quality is sufficient for a Differential Expression analysis.
+
+Then we can also observed the individual FastQC files for each sample and the trimmed version. 
+When observing the Per base sequence content, this section fails because in the beginning there are strong deviations between A and T, and G and C percentages. The reason for this failure is inherent to the library preparation of the Illumina sequencing, as the enzymes used for fragmentation introduce biases that usually cause these fluctuations in all Illumina libraries.
+
+The other two warnings when looking at the distribution of the GC count per read. The GC count per read is only a bit shifted from the Theoretical Distribution. The warning is raised if the sum of the deviations from the normal distribution are higher than 15% of the reads. 
+
+The Sequence Length Distribution outputs a warning because the given reads length was 75bp and we get reads within an interval of 70-75. In the trimmed version, this interval is a bit higher 68-75, due to the trimming effect.

@@ -1,0 +1,457 @@
+---
+title: "STA426 Exercise 10: preprocess and explore a single cell data"
+author: "Gonzalo Cardenal"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+startTime = proc.time()
+```
+
+
+The single cell dataset consists of peripheral blood mononuclear cells. These cells comprise different cell types. For each cell the ground truth is provided in terms of the assigned cell type that was derived using additional data. A cell has "unassigned" as cell type if it could not be reliably assigned to a cell type. 
+
+1. Modify the quality-based cell filtering to remove the low quality cells that could not be assigned. Try with  different thresholds 
+2. Try different clustering methods and parameters such that different cell types are in separate clusters.
+
+The example workflow is inspired by http://bioconductor.org/books/release/OSCA/
+
+
+
+
+
+```{r load packages, warning=FALSE}
+suppressPackageStartupMessages(library(scuttle))
+suppressPackageStartupMessages(library(scran))
+suppressPackageStartupMessages(library(scater))
+suppressPackageStartupMessages(library(BiocParallel))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(HDF5Array))
+suppressPackageStartupMessages(library(hdf5r))
+suppressPackageStartupMessages(library(pheatmap))
+BPPARAM = BiocParallel::MulticoreParam(workers=2)
+BPPARAM = BiocParallel::SerialParam()
+
+
+```
+
+
+## Question 01: Load the data
+
+
+```{r load data}
+sce = readRDS("pbmc-sce.RDS")
+sce
+```
+
+Optionally subsample 2000 cells to reduce runtime
+```{r subsample cells, eval=FALSE}
+set.seed(38)
+sce = sce[ , sample(1:ncol(sce), size = 2000, replace = FALSE)]
+
+```
+
+The cell type abundances are
+
+```{r barplot cell types, fig.width=10, fig.height=5}
+cd = as.data.frame(colData(sce))
+ggplot(cd, aes(x=cellType)) + geom_bar() +
+   scale_fill_manual() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+```
+
+
+## Question 2
+
+Compute and visualize quality scores
+
+```{r quality scores}
+
+isMito <- grepl("^mt-", rowData(sce)$Symbol, ignore.case=TRUE)
+
+sce <- addPerCellQC(sce, subsets=list(Mito=isMito), percent_top=100,
+                    detection_limit=0, BPPARAM=BPPARAM)
+
+```
+
+
+* number of detected genes
+```{r}
+sce_detected <- sce$detected
+head(sce_detected)
+```
+
+* number of assigned reads
+```{r}
+sce_assigned <- sce$sum
+head(sce_assigned)
+```
+
+* percentage of mitochondrial reads
+```{r}
+sce_percentage_mitochondrial <- sce$subsets_Mito_percent
+head(sce_percentage_mitochondrial)
+```
+
+Visualize the quality scores with `plotColData`.
+
+```{r}
+#Violin plot
+gridExtra::grid.arrange(
+plotColData(sce, "detected", "Sample",
+       colour_by = "cellType") +  ggtitle("NGSC3 QC scores"),
+plotColData(sce, "sum", "Sample",
+       colour_by = "cellType") ,
+plotColData(sce, "subsets_Mito_percent", "Sample",
+       colour_by = "cellType") 
+)
+```
+
+```{r}
+#Violin plot
+plotColData(sce, "sum", "Sample",
+       colour_by = "cellType") 
+```
+
+```{r}
+#Violin plot
+plotColData(sce, "subsets_Mito_percent", "Sample",
+       colour_by = "cellType") 
+```
+
+```{r}
+plotColData(sce, "detected",  "Sample",
+       colour_by = "cellType") 
+```
+
+
+```{r, eval=FALSE}
+
+isMito <- grepl("^mt-", rowData(sce)$Symbol, ignore.case=TRUE)
+
+sce <- addPerCellQC(sce, subsets=list(Mito=isMito), percent_top=100,
+                    detection_limit=0, BPPARAM=BPPARAM)
+
+
+
+```
+
+Filter by quality scores. The function `isOutlier` defines outliers based on the difference to the median scores. Refer to the manual. Consider also setting manual thresholds.
+
+## Setting other thresholds
+
+```{r}
+qc.lib <- isOutlier(sce$sum, log=TRUE, type="lower")
+qc.nexprs <- isOutlier(sce$detected, log=TRUE, type="lower")
+qc.mito <- isOutlier(sce$subsets_Mito_percent, type="higher")
+qc.top <- isOutlier(sce$percent.top_100, type="higher")
+
+discard <- qc.lib | qc.nexprs | qc.mito | qc.top
+
+sce$discard = discard
+
+sceFilt = sce[ , !sce$discard]
+unassignedFilt <- sceFilt[sceFilt$cellType == "unassigned", ]
+f_unassigned <- nrow(unassignedFilt)/nrow(sceFilt)
+
+minCellsExpressed = 5
+isExpressed <- Matrix::rowSums(counts(sceFilt) >= 1) >= minCellsExpressed
+sceFilt = sceFilt[isExpressed, ]
+
+```
+
+```{r}
+#Violin plot
+gridExtra::grid.arrange(
+plotColData(sce, "detected", "Sample",
+       colour_by = "discard") +  ggtitle("NGSC3 QC Filtered data"),
+plotColData(sce, "sum", "Sample",
+       colour_by = "discard") ,
+plotColData(sce, "subsets_Mito_percent", "Sample",
+       colour_by = "discard") 
+)
+```
+
+We can set stricter filtering criteria:
+```{r}
+qc.lib2 <- isOutlier(sce$sum, log=TRUE, type="lower", nmads = 2)
+qc.nexprs2 <- isOutlier(sce$detected, log=TRUE, type="lower", nmads = 2)
+qc.mito2 <- isOutlier(sce$subsets_Mito_percent, type="higher", nmads = 2)
+qc.top2 <- isOutlier(sce$percent.top_100, type="higher", nmads = 2)
+
+discard2 <- qc.lib2 | qc.nexprs2 | qc.mito2 | qc.top2
+
+sce$discard2 = discard2
+
+sceFilt2 = sce[ , !sce$discard2]
+unassignedFilt_2 <- sceFilt2[sceFilt2$cellType == "unassigned", ]
+f_unassigned_2 <- nrow(unassignedFilt_2)/nrow(sceFilt)
+
+minCellsExpressed = 5
+isExpressed <- Matrix::rowSums(counts(sceFilt2) >= 1) >= minCellsExpressed
+sceFilt2 = sceFilt2[isExpressed, ]
+
+#Violin plots with nMADs = 2 
+gridExtra::grid.arrange(
+plotColData(sce, "detected", "Sample",
+       colour_by = "discard") +  ggtitle("NGSC3 QC Filtered data stricter threshold"),
+plotColData(sce, "sum", "Sample",
+       colour_by = "discard") ,
+plotColData(sce, "subsets_Mito_percent", "Sample",
+       colour_by = "discard") 
+)
+```
+
+With adaptive tresholds:
+```{r filter low quality cells}
+df = DataFrame(sum = sce$sum,
+               detected = sce$detected,
+          mito = sce$subsets_Mito_percent,
+          top = sce$percent.top_100)
+
+reasons <- perCellQCFilters(df, 
+    sub.fields=c("sum","detected", "mito", "top"), nmads = 1)
+colSums(as.matrix(reasons))
+
+sce$discard3 = reasons$discard
+
+sceFilt = sce[ , !sce$discard3]
+unassignedFilt_3 <- sceFilt[sceFilt$cellType == "unassigned", ]
+f_unassigned_3 <- nrow(unassignedFilt_3)/nrow(sceFilt)
+
+minCellsExpressed = 5
+isExpressed <- Matrix::rowSums(counts(sceFilt) >= 1) >= minCellsExpressed
+sceFilt = sceFilt[isExpressed, ]
+
+#Violin plot
+gridExtra::grid.arrange(
+plotColData(sce, "detected", "Sample",
+       colour_by = "discard") +  ggtitle("NGSC3 QC Filtered data Adaptive Threshold"),
+plotColData(sce, "sum", "Sample",
+       colour_by = "discard") ,
+plotColData(sce, "subsets_Mito_percent", "Sample",
+       colour_by = "discard") 
+)
+```
+
+Here we run three different filtering methods. The function perCellQCFilters calls isOutlier for each of the subfields specified, it is just a different way to run the filtering. With this specific method when use the stricter deviation to the median allowing only `nmads` (Median absolute deviation) = 1, narrowing the outliers to a small deviation from the median. The default value of isOutlier takes `nmads` = 3, so we tried for nmads 3,2 and 1 respectively.As the tutorial mentions, to find a appropriate threshold values for for each experimental protocol and biological system requires considerable experience. Here he just tried different thresholds based on the deviation to the median.
+
+```{r}
+sum(sce$discard3)
+sum(sce$discard2)
+sum(sce$discard)
+
+f_unassigned
+f_unassigned_2
+f_unassigned_3
+```
+We can observe that `nmads` = 1 got the lowest fraction of unassigned cells 3.62%, however this stricter threshold also discarted 5631 cells, which is not optimal. Our initial criteria(default nmads for `isOutlier`) with `nmads` = 3 did a better work filtering, as the fraction of unassigned cells was 3.77% but it only filtered out 891 cells. When selecting this parameter, it is important to find a nice balance between filtering the outliers and still mantein a good number of the data.
+
+```{r, eval=FALSE, include=FALSE}
+## Question 3
+
+#Check if there are signs for ambient RNA. E.g. the genes
+
+sce = logNormCounts(sce)
+
+## check if monocyte markers or HBB are expressed in other cells
+
+head(rowData(sce))
+ids <- rownames(sce)[rowData(sce)$Symbol %in% c("CD14", "CCR2", "FCGR3B", "ITGAM")]
+plotExpression(sce, ids, x="cellType") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+ids <- rownames(sce)[rowData(sce)$Symbol %in% c("HBB")]
+plotExpression(sce, ids, x="cellType") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
+## Question 3
+
+Normalize
+
+```{r normalize}
+sceFilt = logNormCounts(sceFilt)
+sceFilt_2 = logNormCounts(sceFilt)
+```
+
+Compute reduced dimension representation
+```{r dim red}
+set.seed(38)
+dec <- modelGeneVarByPoisson(sceFilt, BPPARAM=BPPARAM)
+topGenes <- getTopHVGs(dec, n = 2000)
+sceFilt <- runPCA(sceFilt, subset_row=topGenes, BPPARAM=BPPARAM) 
+sceFilt <- runUMAP(sceFilt, dimred="PCA", BPPARAM=BPPARAM)
+
+```
+
+
+# Clustering 
+
+The first clustering is ran with 10 centers for the kmeans
+```{r kmeans}
+set.seed(100)
+clust.kmeans <- kmeans(reducedDim(sceFilt, "PCA"), centers=10)
+table(clust.kmeans$cluster)
+```
+
+```{r plot umap, fig.width=10}
+colLabels(sceFilt) <- factor(clust.kmeans$cluster)
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("K=10 labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") +  ggtitle("K=10 cell types colored")
+```
+
+We can ran it for one center per each cell type, i.e. K=27
+```{r}
+set.seed(100)
+clust.kmeans.27 <- kmeans(reducedDim(sceFilt, "PCA"), centers=27)
+table(clust.kmeans.27$cluster)
+```
+
+```{r}
+colLabels(sceFilt) <- factor(clust.kmeans.27$cluster)
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("K=27 labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") + ggtitle("K=27 cell types colored")
+```
+We can also run other clustering methods:
+*Graph-based clustering SNN*
+```{r}
+g <- buildSNNGraph(sceFilt, use.dimred="PCA")
+clust.SNN <- igraph::cluster_walktrap(g)$membership
+
+colLabels(sceFilt) <- factor(clust.SNN)
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("SNN walktrap labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") + ggtitle("SNN walktrap cell types colored")
+```
+
+*Graph-based clustering SNN*
+```{r}
+g <- buildKNNGraph(sceFilt, use.dimred="PCA")
+clust.KNN <- igraph::cluster_walktrap(g)$membership
+
+colLabels(sceFilt) <- factor(clust.KNN)
+
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("KNN walktrap labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") + ggtitle("KNN walktrap cell types colored")
+```
+
+*Louvain*
+```{r}
+g <- buildSNNGraph(sceFilt, use.dimred="PCA")
+clust.SNN.louvain <- igraph::cluster_louvain(g)$membership
+
+colLabels(sceFilt) <- factor(clust.SNN.louvain)
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("SNN Louvain labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") + ggtitle("SNN Louvain cell types colored")
+```
+
+*Leiden*
+```{r}
+g <- buildSNNGraph(sceFilt, use.dimred="PCA")
+clust.SNN.leiden <- igraph::cluster_leiden(g)$membership
+
+colLabels(sceFilt) <- factor(clust.SNN.leiden)
+plotReducedDim(sceFilt, "UMAP", colour_by="label") + ggtitle("SNN Leiden labels colored")
+plotReducedDim(sceFilt, "UMAP", colour_by="cellType") + ggtitle("SNN Leiden cell types colored")
+```
+
+
+## Question 4
+Compute agreement of clusters with cell types
+
+```{r}
+tab <- table(clust.kmeans$cluster, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="K-Means for K=10 cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+```{r}
+tab <- table(clust.kmeans.27$cluster, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="K-Means for K=27 cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+```{r}
+tab <- table(clust.SNN, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="SNN cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+```{r}
+tab <- table(clust.KNN, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="KNN cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+
+```{r}
+tab <- table(clust.SNN.louvain, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="SNN louvain cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+```{r}
+tab <- table(clust.SNN.leiden, sceFilt$cellType )
+phm <- pheatmap(log10(tab+10), main="SNN leiden cluster vs cell type",
+    color=viridis::viridis(100), silent=FALSE)
+phm
+```
+
+Sensitivity and specificity of low quality cell detection
+```{r sensitivity}
+mean(sce$discard[sce$cellType == "unassigned"])
+mean(!sce$discard[sce$cellType != "unassigned"])
+```
+
+Agreement of clustering and cell type
+
+```{r}
+mclust::adjustedRandIndex(clust.kmeans$cluster,sceFilt$cellType)
+```
+
+To evaluate the clusters quality, we can just compute the metric adjusted rand index. For our other clustering methods:
+
+```{r}
+mclust::adjustedRandIndex(clust.kmeans.27$cluster,sceFilt$cellType)
+```
+
+```{r}
+mclust::adjustedRandIndex(clust.SNN,sceFilt$cellType)
+```
+
+```{r}
+mclust::adjustedRandIndex(clust.KNN,sceFilt$cellType)
+```
+
+```{r}
+mclust::adjustedRandIndex(clust.SNN.louvain,sceFilt$cellType)
+```
+
+```{r}
+mclust::adjustedRandIndex(clust.SNN.leiden,sceFilt$cellType)
+```
+
+The adjusted Rand Index measures the similarity between two classifications of the same objects by the proportions of agreements between the two partitions. By comparing to `sceFilt$cellType` we can estimate how the clustering methods performed, from a ratio from 0 to 1. The clustering method with the highest adjusted Rand index was `SNN.louvain`, and therefore we can conclude `SNN.louvain` was the best method to cluster our data.
+
+Runtime in seconds
+```{r elapsed}
+paste(signif((proc.time() - startTime)[ "elapsed"], digits=4), "s")
+```

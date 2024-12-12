@@ -1,0 +1,485 @@
+---
+title: "Exercise 13: Cross-sample scRNAseq differential state analysis"
+author: "Gonzalo Cardenal Antolin (GonzaloCardenalAl)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+---
+
+
+### Getting started
+
+The aim of this exercise is to practice and push further what has been done during the hands-on session. We will be working with the same dataset, namely a single-cell RNA-seq of mouse cortex injected with LPS or with a vehicle treatment (see [Crowell et al.](https://www.nature.com/articles/s41467-020-19894-4)). You can download the data in [SingleCellExperiment (SCE)](https://bioconductor.org/packages/release/bioc/vignettes/SingleCellExperiment/inst/doc/intro.html) format [here](http://imlspenticton.uzh.ch/teaching/STA426/), or with:
+
+```{r, eval=FALSE}
+# download the single-cell counts:
+download.file("http://imlspenticton.uzh.ch/teaching/STA426/week13.SCE.rds", dest="week13.SCE.rds")
+# the pseubo-bulk aggregation:
+download.file("http://imlspenticton.uzh.ch/teaching/STA426/week13.PB.rds", dest="week13.PB.rds")
+```
+
+The code used during the hands-on session is available in the [course github repo](https://github.com/sta426hs2022/material/tree/main/week13-12dec2022). An example of a different workflow on this very dataset, from pre-processing to clustering and differential state analysis, is available [here](http://htmlpreview.github.io/?https://github.com/HelenaLC/BC2_2019-workshop_multi-scRNA-seq/blob/master/LPS/docs/index.html).
+
+# Loading necessary libraries
+
+```{r}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(scran) # sc analysis
+  library(scater) # sc QC and plotting
+  library(batchelor) # batch correction methods
+  library(scDblFinder) # doublet detection
+  # library(sctransform) # variance-stabilizing transformation (optional)
+  library(muscat) # differential expression analysis
+  library(BiocParallel) # handling multi-threading
+  library(BiocNeighbors) # specifying params for kNN
+  library(igraph) # for manual graph clustering
+  library(sechm) # plotting
+  library(ggplot2) # plotting
+  library(patchwork) # to combine
+  library(grid)
+  library(UpSetR)
+  library("edgeR")
+  library(dplyr)
+})
+```
+
+### Question 1: Per-celltype DS analysis and comparison
+
+The goal of the exercise is to try to disentangle celltype-specific responses to the treatment. For the first part, follow the following steps:
+
+*1. Repeat the differential state analysis as we did in the course using [muscat](https://bioconductor.org/packages/release/bioc/html/muscat.html) (or take your saved output from the course).*
+https://bioconductor.org/packages/devel/bioc/vignettes/muscat/inst/doc/analysis.html
+
+```{r}
+sce <- readRDS("week13.SCE.rds")
+dim(sce)
+```
+
+```{r, eval=FALSE}
+assays(sce)$counts
+```
+
+```{r}
+table(sce$sample_id, sce$group_id)
+```
+
+QC
+
+```{r}
+mito <- grep("mt-", rownames(sce), value = TRUE)
+head(mito)
+```
+
+```{r}
+# get QC metrics:
+sce <- addPerCellQC(sce, subsets=list(Mt=mito), percent.top=c(5,10))
+sce <- addPerFeatureQC(sce)
+
+# we plot some of the metrics
+qc <- as.data.frame(colData(sce))
+ggplot(qc, aes(subsets_Mt_percent)) + geom_histogram() + facet_wrap(~sample_id)
+```
+
+```{r}
+ggplot(qc, aes(log10(sum))) + geom_histogram() + facet_wrap(~sample_id)
+```
+
+```{r}
+ggplot(qc, aes(log10(sum), log10(detected))) + geom_point() + geom_density2d()
+```
+```{r}
+# we set thresholds on the library sizes and detection rate:
+sce$qc.out <- isOutlier(log(sce$sum),nmads=3,batch=sce$sample_id) |
+              isOutlier(log(sce$detected),nmads=3,batch=sce$sample_id)
+# a fancier job would be accomplished by https://github.com/wmacnair/SampleQC
+table(sce$qc.out)
+```
+```{r}
+# get rid of seldom detected genes
+sce <- sce[rowData(sce)$detected>=4,]
+
+# we flag doublets: doublets are droplets that capture more than one cell and this might be a problem when it captures more than one cell-type
+sce <- scDblFinder(sce, samples="sample_id", BPPARAM=MulticoreParam(6))
+table(sce$scDblFinder.class)
+```
+Normalization and reduction
+```{r}
+# (fast) standard log-normalization
+sce <- logNormCounts(sce)
+
+# get high-variable genes (normally we'd take 3000, here we'll go skim for speed)
+hvg <- getTopHVGs(sce, n=1000)
+
+# alternative: variance-stabilizing transformation
+# vst <- suppressWarnings(sctransform::vst(counts(sce)))
+# logcounts(sce) <- vst$y
+# # get highly-variable genes
+# hvg <- row.names(sce)[order(vst$gene_attr$residual_variance,
+#                             decreasing=TRUE)[1:1000]]
+
+
+# run PCA
+sce <- runPCA(sce, ncomponents=50, subset_row=hvg)
+
+#How many componentes do you take? before the used the elbo, but it is not a good way to proceed. 
+
+# check the variance explained by the PCs:
+pc.var <- attr(reducedDim(sce),"percentVar")
+plot(pc.var, xlab="PCs", ylab="% variance explained")
+```
+
+```{r}
+# restrict to the first 20 components:
+reducedDim(sce) <- reducedDim(sce)[,1:20]
+
+# run and plot 2d projections based on the PCA
+# to improve performance, use Annoy kNN approximation:
+sce <- runTSNE(sce, dimred="PCA", BNPARAM=AnnoyParam())
+sce <- runUMAP(sce, dimred="PCA", n_neighbors=30, BNPARAM=AnnoyParam())
+
+# you can compare the 2d embeddings:
+# sleepwalk::sleepwalk( as.list(reducedDims(sce)[c("TSNE","UMAP")]),
+#                       featureMatrices=reducedDims(sce)[["PCA"]] )
+
+#it is an impossible task to do not introduce distorsions in these methods of dimensionality reduction.  Because to perserve the neighbours of one cell, you need to disturb the others. 
+
+# plot by doublet score
+plotUMAP(sce, colour_by="scDblFinder.score") +
+  plotTSNE(sce, colour_by="scDblFinder.score") +
+  plot_layout(guides = "collect")
+```
+
+```{r}
+# filter out bad cells
+sce <- sce[,sce$scDblFinder.class!="doublet" & !sce$qc.out]
+```
+Batch correction
+```{r}
+# check mixing:
+plotTSNE(sce, colour_by="group_id") +
+  plotTSNE(sce, colour_by="sample_id") +
+  plot_layout(guides = "collect")
+```
+Clustering
+```{r}
+# BiocNeighbors
+g <- buildKNNGraph(sce, BNPARAM=AnnoyParam(), use.dimred="PCA", k=30)
+sce$cluster <- as.factor(cluster_leiden(g, objective_function="modularity",
+                                        n_iterations=20)$membership)
+table(sce$cluster)
+```
+```{r}
+# we could play with the `resolution_parameter` of `cluster_leiden` 
+# to decide on the granularity
+
+plotTSNE(sce, colour_by="cluster", text_by="cluster") +
+  plotUMAP(sce, colour_by="cluster", text_by="cluster")
+```
+Clustering abundances across samples
+```{r}
+ca <- table(cluster=sce$cluster, sample=sce$sample_id)
+ggplot(as.data.frame(ca), aes(reorder(sample), cluster, fill=Freq)) +
+  geom_tile() + geom_text(aes(label=Freq)) +
+  scale_fill_viridis_c()
+```
+
+Cluster annotation
+-De-novo marker identification
+```{r}
+# we identify genes that differ between clusters:
+mm <- scran::findMarkers(sce, groups=sce$cluster, test.type="binom",
+                         BPPARAM=MulticoreParam(6))
+# we select the top 5 markers by cluster:
+markers <- unique(unlist(lapply(mm, FUN=function(x){
+  head(row.names(x[x$FDR<0.01,]),5)
+})))
+```
+-Known markers
+```{r}
+genes <- list(
+  astrocytes = c("Aqp4", "Gfap", "Fgfr3","Dio2"),
+  endothelial = c("Cldn5","Nostrin","Flt1"),
+  microglia = c("C1qb","Tyrobp","P2ry12", "Csf1r"),
+  neuronal = c("Snap25", "Stmn2", "Syn1", "Rbfox3"),
+  excNeuron = c("Slc17a7","Camk2a","Grin2b","Fezf2"),
+  inhNeuron = c("Gad1","Lhx6","Adarb2"),
+  oligodendro = c("Opalin","Plp1","Mag","Mog"),
+  OPC = c("Pdgfra","Sox6","Bcan")
+)
+
+# since the row.names of the object have also the ensembl id, we find the matching row names for each gene:
+km <- lapply(genes, FUN=function(g) grep(paste0(g, "$", collapse="|"), rownames(sce), value=TRUE))
+```
+-Pseudo-bulk aggregation
+```{r}
+# muscat
+# mean logcounts by cluster:
+pb <- aggregateData(sce, "logcounts", by=c("cluster"), fun="mean")
+assayNames(pb) <- "logcounts"
+assays(pb)$propOfMax <- exp(logcounts(pb))/rowMaxs(exp(logcounts(pb)))
+rowData(pb)$marker4 <- NA
+rowData(pb)[unlist(km),"marker4"] <- rep(names(km),lengths(km))
+
+sechm(pb, c(unlist(km)), assayName="logcounts", gaps_row="marker4",
+      show_colnames=TRUE, do.scale=TRUE, breaks=1, row_title_rot=0) + 
+  sechm(pb, c(unlist(km)), assayName = "propOfMax", show_colnames=TRUE,
+        do.scale=FALSE, hmcols=viridis::viridis(100), 
+        row_names_gp=gpar(fontsize=9))
+```
+
+```{r}
+# heatmap for the de-novo markers:
+sechm(pb, markers, assayName = "propOfMax", show_colnames=TRUE,
+        do.scale=FALSE, hmcols=viridis::viridis(100), 
+        row_names_gp=gpar(fontsize=9))
+```
+
+```{r}
+# we get rid of the unspecific neuronal markers:
+km2 <- km[names(km)!="neuronal"]
+# we extract the pseudo-bulk counts of the markers for each cluster
+mat <- assay(pb)[unlist(km2),]
+# we aggregate across markers of the same type
+mat <- aggregate(t(scale(t(mat))),
+                 by=list(type=rep(names(km2), lengths(km2))),
+                 FUN=sum)
+# for each column (cluster), we select the row (cell type) which has the maximum aggregated value
+cl2 <- mat[,1][apply(mat[,-1], 2, FUN=which.max)]
+
+# we convert the cells' cluster labels to cell type labels:
+sce$cluster2 <- cl2[sce$cluster]
+table(sce$cluster, sce$cluster2)
+```
+
+```{r}
+plotUMAP(sce, colour_by="cluster2", text_by="cluster2")
+```
+
+```{r}
+# we aggregate again to pseudo-bulk using the new clusters
+pb <- aggregateData(sce, "logcounts", by=c("cluster2"), fun="mean")
+assayNames(pb) <- "logcounts"
+# and we plot again the expression of the markers as a sanity check
+rowData(pb)$marker4 <- NA
+rowData(pb)[unlist(km),"marker4"] <- rep(names(km),lengths(km))
+sechm(pb, c(unlist(km)), assayName="logcounts", gaps_row="marker4",
+      show_colnames=TRUE, do.scale=TRUE, breaks=1, row_title_rot=0)
+```
+
+```{r}
+plotTSNE(sce, colour_by="cluster2", text_by="cluster2")
+```
+
+```{r}
+saveRDS(sce, file="week13.SCE.processed.rds")
+```
+
+Differential state analysis
+```{r}
+# we aggregate by cluster x sample to perform pseudo-bulk differential state analysis
+sce <- muscat::prepSCE(sce, kid="cluster2", sid = "sample_id",
+                       gid = "group_id")
+pb <- aggregateData(sce)
+
+pbMDS(pb)
+```
+```{r}
+# we run edgeR on each cluster and extract the results
+res <- pbDS(pb)
+```
+```{r}
+res2 <- dplyr::bind_rows(res$table[[1]])
+
+# volcano plots
+ggplot(res2, aes(logFC, -log10(p_adj.loc), colour=p_adj.loc<0.05)) + geom_point() + facet_wrap(~cluster_id)
+```
+```{r}
+# top genes in a given cell type
+pbHeatmap(sce, res, k="astrocytes", top_n = 5)
+```
+```{r}
+# we extract all differentially-expressed genes:
+degs <- unique(res2[res2$p_adj.loc<0.05,"gene"])
+
+# we flatten the pb object (putting all cell types in the same assay) and calculate foldchanges
+pb2 <- pbFlatten(pb)
+# we add a logFC assay:
+pb2 <- sechm::log2FC(pb2, fromAssay="logcpm", controls=pb2$group_id=="WT", by=pb2$cluster_id)
+# we reorder
+pb2 <- pb2[,order(pb2$cluster_id, pb2$group_id)]
+# we plot a heatmap of the logFC of the top 200 genes across all cell types
+sechm(pb2, head(degs,200), assayName="log2FC", gaps_at="cluster_id",
+      column_title_gp=gpar(fontsize=9))
+```
+
+```{r}
+# we run edgeR on each cluster and extract the results
+res <- pbDS(pb)
+```
+```{r}
+res2 <- dplyr::bind_rows(res$table[[1]])
+
+# volcano plots
+ggplot(res2, aes(logFC, -log10(p_adj.loc), colour=p_adj.loc<0.05)) + geom_point() + facet_wrap(~cluster_id)
+```
+
+*2. Compare the differentially-expressed genes across the different cell types, for instance using [UpSet plots](https://cran.r-project.org/web/packages/UpSetR/index.html).*
+```{r}
+res2$DE <- res2$p_adj.loc<0.05
+
+degs <- as.data.frame(degs)
+
+degs$astrocytes <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "astrocytes" & res2$DE == TRUE], 1, 0)
+
+degs$endothelial <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "endothelial" & res2$DE == TRUE], 1, 0)
+
+degs$excNeuron <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "excNeuron" & res2$DE == TRUE], 1, 0)
+
+degs$inhNeuron <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "inhNeuron" & res2$DE == TRUE], 1, 0)
+
+degs$microglia <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "microglia" & res2$DE == TRUE], 1, 0)
+
+degs$oligodendro <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "oligodendro" & res2$DE == TRUE], 1, 0)
+
+degs$OPC <- ifelse(degs$degs %in% res2$gene[res2$cluster_id == "OPC" & res2$DE == TRUE], 1, 0)
+
+upset(degs[-1], sets = colnames(degs[-1]), order.by = "freq")
+```
+In the UpSet plot we can observe the genes the amount of genes that were DE for each cell type. Astrocytes and endothelial cells are the cell types with highest DE genes. 
+
+*3. Choose one cell type, find some genes that are significant in only that cell type, and plot their pseudo-bulk profile across the dataset (e.g. with `muscat::pbHeatmap`, or flattened heatmaps using `SEtools`). Are they truly cell-type specific?*
+```{r}
+rownames(degs) <- degs$degs
+degs <- degs[-1]
+
+selected_rows <- which(degs$excNeuron == TRUE & rowSums(degs[, -which(names(degs) == "excNeuron")]) == 0)
+DE_only_excNeuron <- rownames(degs[selected_rows, , drop = FALSE])
+head(DE_only_excNeuron)
+```
+We choose these 5 genes only DE in excitatory neurons.
+
+```{r}
+# we flatten the pb object (putting all cell types in the same assay) and calculate foldchanges
+pb2 <- pbFlatten(pb)
+# we add a logFC assay:
+pb2 <- sechm::log2FC(pb2, fromAssay="logcpm", controls=pb2$group_id=="WT", by=pb2$cluster_id)
+# we reorder
+pb2 <- pb2[,order(pb2$cluster_id, pb2$group_id)]
+sechm(pb2, head(DE_only_excNeuron), assayName="log2FC", gaps_at="cluster_id",
+      column_title_gp=gpar(fontsize=5))
+```
+If they were cell-type specific, we would observe differential expression (up or down-regulated) only for that cluster ID. However we can observe for at least these 5 genes specifically, these genes are not truely cell-type specific as their expression is also differential for other clusters.
+
+### Question 2: Global DS analysis
+
+Instead of running the differential expression analysis separately for each cell type, like `muscat` does, we can also run it for all cell types together. This allows us to use the framework of generalized linear models (GLMs)<sup>[1](#f1)</sup> to capture effects in terms of global treatment (i.e. group) effect, and interaction terms capturing the additional effect of the treatment in specific cell types. The second part of the exercise is to try such an approach. More specifically:
+
+*1. Build a pseudo-bulk `SummarizedExperiment` or counts matrix that contains all cell types (e.g. `muscat::pbFlatten`).*
+```{r}
+counts <- assays(pb2)$counts
+```
+
+*2. Build a `model.matrix` that captures i) the different cell types (`cluster_id`), ii) the different treatments (`group_id`), and iii) their interaction.*
+
+```{r}
+group <- factor(colnames(pb2))
+y <- DGEList(counts=counts , group=group)
+y <- calcNormFactors(y)
+```
+
+i) the different cell types (`cluster_id`)
+```{r}
+cell_types <- pb2$cluster_id
+design_cell_types <- model.matrix(~cell_types)
+y <- estimateDisp(y,design_cell_types)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design_cell_types)
+lrt_celltypes <- glmLRT(fit)
+topTags(lrt_celltypes)
+```
+
+ii) the different treatments (`group_id`)
+```{r}
+group <- pb2$group_id
+design <- model.matrix(~group)
+y <- estimateDisp(y,design)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design)
+lrt_treatments <- glmLRT(fit,coef=2)
+topTags(lrt_treatments)
+```
+
+iii) their interaction
+```{r}
+design_interaction <- model.matrix(~cell_types*group)
+```
+
+*3. Run differential expression analysis (e.g. using `edgeR`), and extract the genes with a significant global treatment effect, and the genes with a significant cell type effect (interaction term) for the cell type you selected in #3.*
+```{r}
+y <- DGEList(counts=counts , group=group)
+y <- calcNormFactors(y)
+```
+
+```{r}
+y <- estimateDisp(y,design_interaction)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design_interaction)
+lrt_global <- glmLRT(fit,coef=8)
+topTags(lrt_global, n= Inf, p.value=0.05, adjust.method = "bonferroni")
+```
+For the global treatment, 182 genes were found significant, and thereby diferentially expressed.
+
+```{r}
+y <- estimateDisp(y,design_interaction)
+#To perform likelihood ratio tests:
+fit <- glmFit(y,design_interaction)
+lrt_excneuron <- glmLRT(fit,coef=10)
+topTags(lrt_excneuron, n= Inf, p.value=0.05, adjust.method = "bonferroni")
+```
+
+```{r}
+DE_excNeuron_table <- topTags(lrt_excneuron, n= Inf, p.value=0.05, adjust.method = "bonferroni")
+names_DE_excNeuron_edgeR <- rownames(DE_excNeuron_table)
+```
+Based on the edgeR DE analysis, these are the DE genes with p-value < 0.05 after Bonferroni correction was applied.
+
+*4. Compare these sets of genes with the ones found in the first part (#1-3). Do you find more, or less genes? To what extent do the sets overlap between the two analyses? How do you interpret the differences?*
+Compare to the genes found in the first part, we find 59 DE compared to the 31 found with the muscat approach. We can have a look at the overlap:
+```{r}
+DE_only_excNeuron_muscat <- DE_only_excNeuron
+allDEgenes_excNeuron <- data.frame(DE_genes = unique(union(names_DE_excNeuron_edgeR, DE_only_excNeuron_muscat)))
+
+allDEgenes_excNeuron$edgeR <- allDEgenes_excNeuron$DE_genes %in% names_DE_excNeuron_edgeR
+allDEgenes_excNeuron$muscat <- allDEgenes_excNeuron$DE_genes %in% DE_only_excNeuron_muscat
+
+vennDiagram(allDEgenes_excNeuron[-1])
+```
+No genes overlap. This result is not what we expected, as we would expect most DE genes to be similar. We make a scatter plot to observe the logFC of the gene expression in both methods.
+
+```{r}
+logFC_excNeu_muscat <- as.data.frame(rowMeans(assays(pb2)$log2FC[,21:24]))
+table_excNeu_edgeR <- topTags(lrt_excneuron, n= Inf)$table
+logFC_excNeu_edgeR <- data.frame(logFC = table_excNeu_edgeR$logFC)
+
+logFC <- data.frame(edgeR = logFC_excNeu_edgeR$logFC, muscat = logFC_excNeu_muscat$`rowMeans(assays(pb2)$log2FC[, 21:24])`)
+
+ggplot(logFC, aes(x = edgeR, y = muscat)) +
+  geom_point() +
+  labs(title = "Scatter Plot of Log-Fold Changes",
+       x = "EdgeR",
+       y = "Muscat") +
+  theme_minimal() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed")
+```
+If logFC were the same, or their expression was at least similarly predicted, we would observe all points closer to the red line. However, this is not the case. This indicates above results are not comparable as edgeR and muscat is not predicting similar infering similar expression values for the genes.
+
+***
+
+For a refresher on the use of GLMs, see for instance the examples in the `edgeR::edgeRUsersGuide()` (chapter 3), or the `limma::limmaUsersGuide()` (chapter 9).

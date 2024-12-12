@@ -1,0 +1,36 @@
+2023-12-07 16:16:39,332 NanoPlot 1.42.0 started with arguments Namespace(N50=False, alength=False, bam=None, barcoded=False, color='#4CB391', colormap='Greens', cram=None, downsample=None, dpi=100, drop_outliers=False, fasta=None, fastq=None, fastq_minimal=None, fastq_rich=None, feather=None, font_scale=1, format=['png'], hide_stats=False, huge=False, info_in_report=False, legacy=None, listcolormaps=False, listcolors=False, loglength=False, maxlength=None, minlength=None, minqual=None, no_N50=False, no_static=False, no_supplementary=False, only_report=False, outdir='.', path='./', percentqual=False, pickle=None, plots=['kde', 'dot'], prefix='', raw=False, readtype='1D', runtime_until=None, store=False, summary=['MT-110609_20191007_084018_FAK91278_minion_sequencing_run_NP07B-RNA-20191005-dKD2_sequencing_summary.txt'], threads=4, title=None, tsv_stats=False, ubam=None, verbose=False)
+2023-12-07 16:16:39,333 Python version is: 3.8.18 (default, Sep 11 2023, 13:40:15)  [GCC 11.2.0]
+2023-12-07 16:16:39,346 Nanoget: Collecting metrics from summary file MT-110609_20191007_084018_FAK91278_minion_sequencing_run_NP07B-RNA-20191005-dKD2_sequencing_summary.txt for 1D sequencing
+2023-12-07 16:16:41,268 Nanoget: Finished collecting statistics from summary file MT-110609_20191007_084018_FAK91278_minion_sequencing_run_NP07B-RNA-20191005-dKD2_sequencing_summary.txt
+2023-12-07 16:16:41,440 Reduced DataFrame memory usage from 61.371826171875Mb to 61.371826171875Mb
+2023-12-07 16:16:41,679 Nanoget: Gathered all metrics of 1340688 reads
+2023-12-07 16:16:42,365 Calculated statistics
+2023-12-07 16:16:42,366 Using sequenced read lengths for plotting.
+2023-12-07 16:16:42,474 NanoPlot:  Valid color #4CB391.
+2023-12-07 16:16:42,474 NanoPlot:  Valid colormap Greens.
+2023-12-07 16:16:42,512 NanoPlot:  Creating length plots for Read length.
+2023-12-07 16:16:42,513 NanoPlot:  Using 1340688 reads maximum of 41680bp.
+2023-12-07 16:16:43,125 Saved ./WeightedHistogramReadlength  as png (or png for --legacy)
+2023-12-07 16:16:43,787 Saved ./WeightedLogTransformed_HistogramReadlength  as png (or png for --legacy)
+2023-12-07 16:16:44,465 Saved ./Non_weightedHistogramReadlength  as png (or png for --legacy)
+2023-12-07 16:16:45,074 Saved ./Non_weightedLogTransformed_HistogramReadlength  as png (or png for --legacy)
+2023-12-07 16:16:47,215 Saved ./Yield_By_Length  as png (or png for --legacy)
+2023-12-07 16:16:47,231 Created length plots
+2023-12-07 16:16:47,257 NanoPlot: Creating Read lengths vs Average read quality plots using 1340688 reads.
+2023-12-07 16:16:48,423 Saved ./LengthvsQualityScatterPlot_dot  as png (or png for --legacy)
+2023-12-07 16:16:50,192 Saved ./LengthvsQualityScatterPlot_kde  as png (or png for --legacy)
+2023-12-07 16:16:50,207 Created LengthvsQual plot
+2023-12-07 16:16:50,207 Nanoplotter: Creating heatmap of reads per channel using 1340688 reads.
+2023-12-07 16:16:51,317 Saved ./ActivityMap_ReadsPerChannel  as png (or png for --legacy)
+2023-12-07 16:16:51,319 Created spatialheatmap for succesfull basecalls.
+2023-12-07 16:16:51,319 Nanoplotter: Creating timeplots using 1340688 (full) or 10000 (subsampled dataset) reads.
+2023-12-07 16:16:52,183 Saved ./CumulativeYieldPlot_Gigabases  as png (or png for --legacy)
+2023-12-07 16:16:52,871 Saved ./CumulativeYieldPlot_NumberOfReads  as png (or png for --legacy)
+2023-12-07 16:16:53,662 Saved ./NumberOfReads_Over_Time  as png (or png for --legacy)
+2023-12-07 16:16:54,454 Saved ./ActivePores_Over_Time  as png (or png for --legacy)
+2023-12-07 16:16:55,137 Saved ./TimeLengthViolinPlot  as png (or png for --legacy)
+2023-12-07 16:16:55,810 Saved ./TimeQualityViolinPlot  as png (or png for --legacy)
+2023-12-07 16:16:56,500 Saved ./TimeSequencingSpeed_ViolinPlot  as png (or png for --legacy)
+2023-12-07 16:16:56,502 Created timeplots.
+2023-12-07 16:16:56,502 Writing html report.
+2023-12-07 16:16:56,515 Finished!

@@ -1,0 +1,460 @@
+---
+title: "Group Project: Identification of NMD sensitive RNAs and isoforms with long-read direct RNA sequencing(DRS)"
+author: "Tobia Ochsner, Michael Cibien, Gonzalo Cardenal Antolin (GonzaloCardenalAl)"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+bibliography: references.bib
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(limma) # replace this with packages you will use
+library(ggplot2)
+library(DESeq2)
+library(tximport)
+library(tidyverse)
+library(biomaRt)
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+library(pcaExplorer)
+library(IsoformSwitchAnalyzeR)
+library(calibrate)
+library(MASS)
+})
+```
+
+# Introduction
+
+Oxoford Nanopore... , NMD (Non-sense mediated RNA decay)
+
+
+# Preprocessing
+
+## Quality Control (QC)
+Data was already classified in different folders based on the Quality Control applied with Guppy. This step was done by the lab who provided the experimental data. Two scripts were generated to confirm the filtering heuristics applied during the quality control. We confirmed that the filtering criteria was filtering out reads with q-score lower than 7. (Scripts available on the github repo under the name: "filter.r" & "checkGuppyFilter.r"). We also used Nanoplot, which provided with a report of different sequencing quality indicators (e.g. mean & median read quality, weighed histogram of read lengths...). These reports are also available in the group project GitHub repo. Also, we had reads from samples NP07 and NP08 divided in two folders NP07 & NP07B, and NP08 & NP08B. The reason for this is because during the sequencing process this stops in between so they had to restart the sequencing. Both subsamples were then merged during the mapping in one fatsq file. The results provided by Nanoplot confirmed that our samples were of optimal quality (mean read quality (q-score) > 7 and coherent read length distribution, sequencing error rates, and number of reads).
+
+The sequencing of DRS encloses a higher difficulty. As opposed to sequencing cDNA, mRNA contains dynamic base modifications, e.g. the most abundant internal modification is N6-methyladenosine (m6A) [@roundtree2017dynamic]. This increases the complexity of mRNA direct sequencing and leads to higher error rate, as when a modified nucleotide goes through the ONT MiniON pore, the signal will be incorrect. Therefore, if we want to study this modifications the quality criteria should be lower.
+
+## Mapping and quantification
+To map long reads, the current gold standard is using minimap2. We ran two mappings, one to the genome and another one to the transcriptome. In the genomic mapping, we use [Homo_sapiens.GRCh38.dna.primary_assembly.fa] (https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/dna/) as the reference genome for each sample. In the transcriptome mapping, we use the cdna reference from the Ensmbl database: [Homo_sapiens.GRCh38.cdna.all.fa] (https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/cdna/).
+
+In the quantification, we quantify the genes with Feature Counts, which provides a mode "-L" tailored for long reads. The annotation file was obtained from the Ensembl database [Homo_sapiens.GRCh38.110.gtf] (https://ftp.ensembl.org/pub/release-110/gtf/homo_sapiens/).vWith this mode we obtain the raw counts, needed by Deseq2 for the differential expression analysis. For the transcripts and different isoforms quantification we used NanoCount. NanoCount is a recently released tool specifically developed to quantify Oxford Nanopore direct RNA sequcing (DRS) reads. [@gleeson2022accurate]
+
+# Statistical Analysis
+## Transcript Coverage
+We run a script that outputs a series of plots and statistics. The plots allow us to assess the coverage of the reads against the theoretical full length of their respective isoforms. For our research purpose this is specially helpful. DRS aims to sequence full length transcripts but, at the time of sequencing, there can be mRNA partly degradated mRNA or reads might not be sequence to their full length. This could lead to ambiguous alignnments where secondary alignments would hinder the quantification.
+```{r, eval=FALSE}
+Rscript BamSlam.R rna NP05-sorted-transcriptomic-aln.bam NP05_BamSlam_output
+Rscript BamSlam.R rna NP06-sorted-transcriptomic-aln.bam NP06_BamSlam_output
+Rscript BamSlam.R rna NP07-sorted-transcriptomic-aln.bam NP07_BamSlam_output
+Rscript BamSlam.R rna NP08-sorted-transcriptomic-aln.bam NP08_BamSlam_output
+
+NP05_BamSlam_output_stats
+```
+With that we can observe
+
+
+(write something like this after observing results) In total, 53% of sequin reads were full-length compared to 38% of 5Y reads (Figure 1F). In comparison, using the primary alignments from minimap2 without NanoCount filtering gave a median 5Y coverage of 0.74, with 46% of sequin reads and 29% of 5Y reads being full-length. However, while a significant proportion of reads are full-length, there is considerable room for improvement through sequencing software advances and by preventing degradation during RNA extraction and library preparation.
+
+## Import Data
+```{r}
+samples <- list.files("counts_files")
+
+raw_genomic <- sapply(samples, function(sample) {
+  file <- paste0("counts_files/", sample, "/","primary-genomic-quant")
+  quant <- read.table(file, header=TRUE, row.names=1, sep="\t")
+  gene_id <- rownames(quant)
+  raw <- quant[,6]
+  raw_counts <- setNames(raw, gene_id)
+  return(raw_counts)
+})
+
+raw_genomic <- as.data.frame(raw_genomic)
+
+raw_genomic <- raw_genomic %>%
+  rownames_to_column(var = "gene_name") %>%
+  arrange(gene_name) %>%
+  column_to_rownames(var = "gene_name")
+
+head(raw_genomic)
+
+#Transcriptomic data
+np05_tcrm = read.table(file = 'counts_files/NP05-Scr1/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+head(np05_tcrm)
+```
+
+We are working with direct RNA Long-reads. As we can observe, NanoCounts outputs est_count and tpm. Tpm and estimated counts are not normalised by transcript length as it is usually done with Illumina data. The reason is that in DRS one read is supposed to represent a single transcript molecule starting from the polyA tail, even if the fragment doesn't extend to the 5' end. 
+
+Est_count is the estimated counts obtained by multiplying the raw abundance by the number of primary alignments, the latter is the estimated counts obtained by multiplying the raw abundance by 1M. As we observed above, the full-length transcript coverage was not higher than 30% for any of the samples. Thereby, we decided to continue the analysis with tpm.
+
+```{r}
+np05_tcrm = data.frame(transcript_name = np05_tcrm$transcript_name, tpm_np05 = np05_tcrm$tpm)
+
+np06_tcrm = read.table(file = 'counts_files/NP06-dKD1/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np06_tcrm = data.frame(transcript_name = np06_tcrm$transcript_name, tpm_np06 = np06_tcrm$tpm)
+
+np07_tcrm = read.table(file = 'counts_files/NP07-dKD2/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np07_tcrm = data.frame(transcript_name = np07_tcrm$transcript_name, tpm_np07 = np07_tcrm$tpm)
+
+np08_tcrm = read.table(file = 'counts_files/NP08-Scr2/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np08_tcrm = data.frame(transcript_name = np08_tcrm$transcript_name, tpm_np08 = np08_tcrm$tpm)
+
+tpm_transcriptome <- Reduce(function(x, y) merge(x, y, by = "transcript_name", all = TRUE), list(np05_tcrm, np06_tcrm, np07_tcrm, np08_tcrm))
+
+
+# Rename columns to specify the dataset source
+tpm_transcriptome <- as.data.frame(tpm_transcriptome)
+tpm_transcriptome  <- tpm_transcriptome  %>%
+  arrange(transcript_name) %>%
+  column_to_rownames(var = "transcript_name")
+
+head(tpm_transcriptome)
+
+```
+
+## Exploratory Analysis
+
+Once we obtain the genomic and transcriptomic counts of our samples, we run a initial exploratory analysis.
+
+```{r}
+colSums(raw_genomic)
+colSums(tpm_transcriptome)
+
+#Do we really need to normalise with long reads? No, but then what about the difference in raw genomic counts?
+median_all_counts = median(colSums(raw_genomic))
+scaling_factors = median(colSums(raw_genomic))/colSums(raw_genomic)
+normalised_genomic=sweep(raw_genomic, 2, scaling_factors, `*`)
+
+colSums(normalised_genomic)
+log_normalised_genomic=log1p(normalised_genomic)
+
+melted_data <- reshape2::melt(log_normalised_genomic)
+colnames(melted_data) <- c("sample","Log_normalised_expression")
+
+violin_plot_allgenes <- ggplot(melted_data, aes(x=sample, y=Log_normalised_expression, fill=sample)) +
+  geom_violin() +
+  labs(title='Violoin Plot of all samples Gene Log Expression Distribution', x='samples',y='Log expression')
+  theme(plot.title = element_text(hjust = 0.5))
+print(violin_plot_allgenes)
+```
+All samples have similar gene expression distributions by looking at the violin plots.
+
+```{r}
+avg_genomic <- rowMeans(raw_genomic)
+
+par(mfrow = c(1, 2))
+layout(matrix(1:2, nrow = 1))
+par(mar = c(3, 3, 2, 1)) 
+hist(avg_genomic)
+hist(log1p(avg_genomic))
+
+ggplot(data = as.data.frame(avg_genomic), mapping =  aes(x = avg_genomic)) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 50
+  ) +
+  labs(title = "Distribution of average expression values of all genes",
+       x = "Average expression",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(data = as.data.frame(avg_genomic), mapping =  aes(x = log(avg_genomic + 1))) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 50
+  ) +
+  labs(title = "Distribution of average expression values of all genes",
+       x = "log10(Average expression + 1)",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+ggplot(data = as.data.frame(avg_genomic), mapping =  aes(x = avg_genomic)) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 50
+  ) +
+  scale_x_continuous(
+    breaks = c(0, 1, 10, 100, 1000, 10000, 20000),
+    trans = "log1p",
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(breaks = c(0, 1),
+                     expand = c(0, 0),
+                     trans = "log1p") +
+  labs(title = "Distribution of average expression values of all genes",
+       x = "log1p(Average expression)",
+       y = "log1p(Count)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+num_detected_genes <- rowSums(raw_genomic > 0)
+
+ggplot(data = as.data.frame(num_detected_genes), mapping =  aes(x = num_detected_genes)) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 23
+  ) +
+  labs(title = "Distribution of number samples in which each gene is detected",
+       x = "Number of samples",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# filter expressed genes 
+# threshold: genes must be detected in at least half of the samples
+#            and the average TPM must be >= 1
+
+expressed <- rowMeans(raw_genomic  > 0) >= 0.5 | rowMeans(raw_genomic) >= 1
+num_filtered_expressed_genes <- rowSums(raw_genomic[expressed,] > 0)
+
+ggplot(data = as.data.frame(num_filtered_expressed_genes), mapping =  aes(x = num_filtered_expressed_genes)) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 23
+  ) +
+  labs(title = "Distribution of number samples in which each gene is detected after filtering",
+       x = "Number of samples",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+Our filtering criteria filtered not only all the genes not expressed in any of the samples but also most of the genes only expressed in one individual sample.
+
+```{r}
+#Plot heatmap
+corr_pearson <- cor(log1p(raw_genomic[expressed,]), method = "spearman")
+pheatmap(corr_pearson)
+```
+The control and the knockdown samples correlate, which indicates there is a differential expression between the knockdown and the control. This again indicates the NMD knockdown might be working and causing a differential gene expression.
+
+#Do PCA here of genomic and transcriptomic data
+
+# PCA dimensionality reduction
+```{r}
+pca <-
+  prcomp(log1p(raw_genomic[expressed,]), center = TRUE, scale. = TRUE)
+
+eigs <- pca$sdev^2
+plot(1:length(eigs), eigs)
+
+condition <- factor(c("control","knockdown","knockdown","control")) #NP05-Scr1, NP06-dKD1, NP07-dKD2, NP08-Scr2
+(coldata <- data.frame(row.names=colnames(raw_genomic), condition))
+
+ggplot(data = as.data.frame(pca$x),
+       mapping = aes(
+         x = PC1,
+         y = PC2,
+         #color = as.factor(anno$age)
+         #color = coldata$condition,
+         #shape = rownames(coldata)
+       )) +
+  geom_point(size = 4) +
+  labs(title = "PCA plot", color = "Age", shape = "Sex") +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Differential Gene Expression Analysis
+
+
+```{r, eval=FALSE}
+#this code is not needed too
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "hsapiens_gene_ensembl")
+tx2gene <- getBM(attributes = c("ensembl_transcript_id_version",
+                                "ensembl_gene_id_version"),
+                 filters = "ensembl_gene_id_version",
+                 values = rownames(expr),
+                 mart = ensembl) %>%
+  dplyr::select(ensembl_transcript_id_version, ensembl_gene_id_version)
+```
+
+```{r}
+#DESeq input
+raw_genomic<- as.matrix(raw_genomic)
+condition <- factor(c("control","knockdown","knockdown","control")) #NP05-Scr1, NP06-dKD1, NP07-dKD2, NP08-Scr2
+(coldata <- data.frame(row.names=colnames(raw_genomic), condition))
+
+# Make DESeq dataset
+dds <- DESeqDataSetFromMatrix(countData=raw_genomic, colData=coldata, design=~condition)
+dds
+
+# Optional filtering step to remove very low counts (chosen minimum of 5)
+keep <- rowSums(counts(dds)) >= 5
+dds <- dds[keep,]
+
+# Run DESeq2 pipeline
+dds <- DESeq(dds)
+res <- DESeq2::results(dds)
+res
+
+#DESeq2 results
+table(res$padj<0.05)
+res <- res[order(res$padj), ]
+
+# Merge with normalized count data
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata)[1] <- "Gene"
+head(resdata)
+resdata$DE <-resdata$padj<0.05
+```
+These are the results of the DE genes from 
+
+```{r}
+# Plot dispersions
+plotDispEsts(dds, main="Dispersion plot", genecol = "black", fitcol = "cyan", finalcol = "blue", legend = TRUE)
+
+# RLD for viewing
+rld <- rlogTransformation(dds) #applies a regularized log transformation to the dds(DESeqDataSet)
+head(assay(rld))
+hist(assay(rld))
+
+# Plot residual p-values
+hist(res$pvalue, breaks=50, col="grey")
+
+#Set colours for plotting
+mycols <- brewer.pal(8, "Accent")[1:length(unique(condition))]
+
+# Heatmap
+sampleDists <- as.matrix(dist(t(assay(rld))))
+#png("heatmap-samples.png", w=1000, h=1000, pointsize=20)
+heatmap.2(as.matrix(sampleDists), key=F, trace="none",
+          col=colorpanel(100, "black", "white"),
+          ColSideColors=mycols[condition], RowSideColors=mycols[condition],
+          margin=c(10, 10), main="Sample Distance Matrix")
+
+# PCA
+rld_pca <- function (rld, intgroup = "condition", ntop = 500, colors=NULL, legendpos="bottomright", main="Principal Component Analysis", textcx=1, ...) {
+  require(genefilter)
+  require(calibrate)
+  require(RColorBrewer)
+  rv = rowVars(assay(rld))
+  select = order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+  pca = prcomp(t(assay(rld)[select, ]))
+  fac = factor(apply(as.data.frame(colData(rld)[, intgroup, drop = FALSE]), 1, paste, collapse = " : "))
+  if (is.null(colors)) {
+    if (nlevels(fac) >= 3) {
+      colors = brewer.pal(nlevels(fac), "Paired")
+    }   else {
+      colors = c("black", "red")
+    }
+  }
+  pc1var <- round(summary(pca)$importance[2,1]*100, digits=1)
+  pc2var <- round(summary(pca)$importance[2,2]*100, digits=1)
+  pc1lab <- paste0("PC1: ",as.character(pc1var),"% variance")
+  pc2lab <- paste0("PC2: ",as.character(pc2var),"% variance")
+  plot(PC2~PC1, data=as.data.frame(pca$x), bg=colors[fac], pch=21, xlab=pc1lab, ylab=pc2lab, main=main, ...)
+  with(as.data.frame(pca$x), textxy(PC1, PC2, labs=rownames(as.data.frame(pca$x)), cex=textcx))
+  legend(legendpos, legend=levels(fac), col=colors, pch=20)
+}
+png("pca-1-2.png", 1000, 1000, pointsize=30)
+rld_pca(rld, colors=mycols, intgroup="condition", xlim=c(-10, 15), ylim=c(-10, 10))
+
+
+
+# MA Plot
+maplot <- function (res, thresh=0.05, labelsig=FALSE, textcx=1, ...) {
+  with(res, plot(baseMean, log2FoldChange, pch=20, cex=.5, log="x", ...))
+  with(subset(res, padj<thresh), points(baseMean, log2FoldChange, col="blue", pch=20, cex=1))
+  if (labelsig) {
+    require(calibrate)
+    with(subset(res, padj<thresh), textxy(baseMean, log2FoldChange, labs=Gene, cex=textcx, col=2))
+  }
+}
+png("diffexpr-maplot-0.05.png", 1500, 1000, pointsize=20)
+maplot(resdata, main="MA Plot")
+
+# Volcano Plot
+volcanoplot <- function (res, lfcthresh=2, sigthresh=0.05, xlab="log2(Fold Change)", legendpos="topright", labelsig=FALSE, textcx=1.5, ...) {
+  with(res, plot(log2FoldChange, -log10(pvalue), pch=20, xlab=xlab, cex.axis=1.8, cex.lab=1.5, ...))
+  with(subset(res, padj<sigthresh ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue", ...))
+  with(subset(res, abs(log2FoldChange)>lfcthresh), points(log2FoldChange, -log10(pvalue), pch=20, col="orange", ...))
+  with(subset(res, padj<sigthresh & abs(log2FoldChange)>lfcthresh), points(log2FoldChange, -log10(pvalue), pch=20, col="green", ...))
+  legend(legendpos, xjust=1, yjust=1, legend=c(paste("p-adj<",sigthresh,sep=""), paste("|log2(FC)|>",lfcthresh,sep=""), "both"), cex=1.5, pch=20, col=c("blue","orange","green"))
+}
+pdf("diffexpr-volcanoplot-hi-res.pdf", 18, 15, pointsize=20)
+volcanoplot(resdata, lfcthresh=2, sigthresh=0.05, xlim=c(-6, 6), ylim=c(0,33), legendpos="topright")
+```
+
+Check the genes and the ones mentioned in the paper
+# Differential Transcript Usage 
+```{r}
+sampleID = c("tpm_np05","tpm_np06","tpm_np07","tpm_np08")
+myDesign = data.frame(sampleID= sampleID, condition = condition)
+tpm_transcriptome$isoform_id <- rownames(tpm_transcriptome)
+
+
+sampleID = c("tpm_np05","tpm_np06","tpm_np07","tpm_np08")
+myDesign = data.frame(sampleID= sampleID, condition = condition)
+raw_counts_transcriptome$isoform_id <- rownames(raw_counts_transcriptome)
+
+aSwitchList <- importRdata(
+  isoformCountMatrix   = tpm_transcriptom,
+  isoformRepExpression = tpm_transcriptome,
+  designMatrix         = myDesign,
+  isoformExonAnnoation = "files/Homo_sapiens.GRCh38.110.chr_patch_hapl_scaff.gtf",
+  isoformNtFasta       = "files/transcriptome_reference.fa",
+  showProgress = FALSE
+)
+
+SwitchListFiltered <- preFilter(
+  switchAnalyzeRlist = aSwitchList,
+  geneExpressionCutoff = 5,
+  isoformExpressionCutoff = 5,
+  removeSingleIsoformGenes = TRUE)
+
+SwitchListAnalyzed <- isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE,
+  reduceFurtherToGenesWithConsequencePotential = FALSE,
+  alpha = 0.05,
+  dIFcutoff = 0.1,
+  onlySigIsoforms = FALSE
+)
+
+extractSwitchSummary(SwitchListAnalyzed)
+summary_isoforms <- SwitchListAnalyzed$isoformFeatures
+write.csv(summary_isoforms[(summary_isoforms$iso_biotype == "nonsense_mediated_decay"),], "NMD_isoformfeatures.tr.csv")
+
+SwitchListAnalyzed <- analyzeORF(
+  SwitchListAnalyzed,
+  orfMethod = "longest",
+  showProgress=FALSE
+)
+
+SwitchListAnalyzed <- extractSequence(
+  SwitchListAnalyzed, 
+  pathToOutput = 'isoform_switch_sequences/',
+  writeToFile=TRUE
+)
+```
+
+
+```{r}
+new_nmd = read.csv(file = 'NMD_exons_to_long_reads_transcriptome_mapping.csv', sep = ',', header = TRUE)
+```
+
+FLAIR to quantify the discovery of new isoforms

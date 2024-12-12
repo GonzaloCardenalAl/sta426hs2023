@@ -1,0 +1,622 @@
+---
+title: "Group Project: Differential Isoform Usage & Identification of NMD sensitive RNAs and isoforms with long-read direct RNA sequencing(DRS)"
+author: "Gonzalo Cardenal Antolin (GonzaloCardenalAl), Michael Cibien (MCibien), Tobia Ochsner (ochsneto)"
+date: today
+format:
+  pdf:
+      
+    documentclass: article
+    papersize: a4paper
+    fontsize: 9pt
+    geometry:
+      - top=30mm
+      - bottom=30mm
+      - left=20mm
+      - right=20mm
+bibliography: references.bib
+csl: ieee.csl
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, size="small")
+
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+```
+
+```{r, include=FALSE}
+suppressPackageStartupMessages({
+library(limma) # replace this with packages you will use
+library(ggplot2)
+library("ggpubr")
+library(DESeq2)
+library(tximport)
+library(tidyverse)
+library(biomaRt)
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+library(pcaExplorer)
+library(IsoformSwitchAnalyzeR)
+library(calibrate)
+library(MASS)
+library(gridExtra)
+})
+```
+
+# Introduction
+
+## Biological Background – NMD
+
+Nonsense-mediated mRNA decay (NMD) is a eukaryotic pathway that is responsible for degradation of not only aberrant, but also some endogeneous mRNA, that would result in physiologically active proteins. This pathway therefore plays a pivotal role in post-transcriptional gene regulation by eliminating mRNA transcripts that could otherwise lead to the synthesis of truncated or malfunctioning proteins. The underlying mechanisms by which NMD selectively targets mRNAs for degradation are not fully elucidated, however, key proteins implicated in this process have been identified, including UPF1, an RNA helicase; SMG1, a phosphatidylinositol-kinase-related kinase; SMG6, an endonuclease; and SMG5 and SMG7, which function as adaptor proteins. [@karousis2021nanopore] [@karousis2022broader]
+
+Historically, it was posited that the primary role of NMD was to target mRNAs containing premature stop codons. Recent research, however, indicates that the scope of NMD is broader, encompassing additional features of mRNAs.
+To explore these additional features, particularly in endogenous mRNAs, researchers have employed strategies such as the knockdown of key NMD proteins. This approach increases the intracellular concentration of NMD-targeted mRNA isoforms, facilitating their study through subsequent RNA sequencing (RNA-seq) experiments.   
+
+## Gene and isoform expression analysis from direct RNA sequencing (DRS)
+
+In conventional differential gene expression analysis short-read sequencing is widely used. However, short-read RNA sequences have limitations in identifying and quantifying gene transcript isoforms due to RNA fragmentation, bias introduction in the reverse transcription into cDNA and the subsequent amplification by PCR. DRS could act as a potential remedy to this problem, since it sequences full-length transcripts, while also characterizing RNA modifications, polyA tails and not needing prior PCR amplification.[@aird2011analyzing] [@steijger2013assessment]
+
+It has been shown by Josie Gleeson et al [@gleeson2022accurate] that DRS has the potential to quantify both genes and transcript isoforms in an unbiased manner allowing for a multitude of analyses: gene and isoform quantification; differential gene expression analysis; differential isoform usage analysis (DUI); discovery of novel isoforms. However, the key challenges of long-read RNA sequencing – namely sequencing depth – remains and impacts the sensitivity of isoform identification with a high probability.[@gleeson2022accurate]
+
+## Goal of this Study
+
+We were lucky to receive DRS data from a follow up project on their paper by Dr. Evan Karousis. They assessed endogenous targets of NMD using a combination of long-read and short-read sequencing and found that the juxtaposition of short-read sequencing with long-read sequencing enabled the identification of novel NMD-targeted mRNA isoforms. [@karousis2021nanopore]
+
+By comparing the results of their previous work to the results of this study, where we use DRS, we aim to answer the question of whether DRS alone possesses sufficient resolution to identify NMD-sensitive mRNAs in human cells.
+
+## Data Background
+
+The data was kindly provided by Dr. Evangelos Karousis, who generated the data while working as post-doctoral researcher in the laboratory of Prof. Dr. Oliver Mühlemann, at the University of Bern in 2019. 
+
+Knockdown experiments on HeLa cells were performed by RNA interference (RNAi). For this, plasmids expressing shRNAs against SMG6 and SMG7 were transfected into the “dKD” cells, whereas in the “Scr” (control) cells plasmids targeting nothing were transfected. polyA+ mRNA was then isolated, and direct RNA-seq was performed using the Flowcell SQK-RNA002 from Oxford Nanopore. The MinKNOW instrument software generated fast5 files, on which basecalling was performed using GUPPY (from Oxford Nanopore Technologies). 
+
+The data was divided into 6 folders, NP05_Scr1, NP06_dKD1, NP07_dKD2, NP07B_dKD2, NP08_Scr2, NP08B_Scr2, where "Scr" refers to the controls and "dKD" to the double-knockdown conditions. The two conditions were performed in a biological duplicate, however the sequencing run of dKD2 and Scr2 samples were interrupted, so thats why there are "B" samples. These folders were merged after quality control (before alignment and subsequent analyses) and therefore conditions are referred to as Scr1, Scr2, dKD1 and dKD2.
+
+# Preprocessing
+
+## Quality Control (QC)
+
+To validate the quality control and the filtering heuristics that were performed by [@karousis2021nanopore] with GUPPY, two scripts were written and run. We confirmed that the filtering criterion was a q-score lower than 7. (The scripts are available on the github repository under [filter.r](https://github.com/sta426hs2023/project-direct-rna-nmd/blob/main/filter.r) and [checkGuppyFilter.r](https://github.com/sta426hs2023/project-direct-rna-nmd/blob/main/checkGuppyFilter.r)). We then used NanoPlot, which generated a report of different sequencing quality statistics like mean and median read quality, read lengths etc. These reports are also available [here](https://github.com/sta426hs2023/project-direct-rna-nmd/tree/main/Quality_Score_reports-Nanoplot). The results provided by NanoPlot confirmed that our samples had mean read quality greater than 7 and displayed coherent read length distribution, sequencing error rates, and number of reads.
+
+The sequencing of DRS is more difficult than sequencing cDNA, since mRNA contains dynamic base modifications, for example one of the most prevalent base modification is N6-methyladenosine (m6A) [@roundtree2017dynamic]. For such modified bases the current produced when passing through the ONT MinION pore are atypical and thus are read as different nucleotides. Therefore higher error rates are expected and if we were to investigate mRNA modifications a lower quality score threshold should be contemplated.
+
+## Mapping and quantification
+
+To map long reads, the current gold standard is using minimap2. We ran two mappings, one to the genome and another one to the transcriptome. In the genomic mapping, [Homo_sapiens.GRCh38.dna.primary_assembly.fa](https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/dna/) was used as the reference genome for each sample. In the transcriptome mapping [cDNA reference from the Ensmbl database](https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/cdna/) was used.
+
+To quantify the genes Feature Counts was used, which provides a mode "-L" tailored for long reads. The annotation file was obtained from the [Ensembl database](https://ftp.ensembl.org/pub/release-110/gtf/homo_sapiens/). With this mode the raw counts were obtained, which were needed by Deseq2 for the differential gene expression analysis. For the transcript and the different isoform quantification NanoCount was utilized. NanoCount is a recently released tool specifically developed to quantify Oxford Nanopore direct RNA sequencing (DRS) reads. [@gleeson2022accurate]
+
+The scripts for mapping and quantification are available [here](https://github.com/sta426hs2023/project-direct-rna-nmd/tree/main/Mapping_%26_Quantification_scripts).
+
+The most important quality control metrics were summarized in Figure 1. Reads had a median quality score of 8.1 - 8.2 across all samples and mean redian lengths were also comparable. The only metric that differed significantly between the samples was the number of reads, however this is partly due to the aforementioned interruptions of the DRS runs. 
+
+![Direct RNA sequencing quality scores and genome alignment metrics.](table_new.png)
+
+# Statistical Analysis
+
+## Transcript Coverage
+
+To assess the coverage of the reads, coverage fractions for the samples were computed using BamSlam scripts. Coverage fraction is defined as the ratio between the transcript length and the theoretical full length of their respective isoforms. 
+
+```{r, eval=FALSE}
+Rscript BamSlam.R rna NP05-sorted-transcriptomic-aln.bam NP05_BamSlam_output
+Rscript BamSlam.R rna NP06-sorted-transcriptomic-aln.bam NP06_BamSlam_output
+Rscript BamSlam.R rna NP07-sorted-transcriptomic-aln.bam NP07_BamSlam_output
+Rscript BamSlam.R rna NP08-sorted-transcriptomic-aln.bam NP08_BamSlam_output
+```
+
+The median coverage fraction is of special interest to us, as we would expect a 5-10% increase in full-length transcripts upon SMG6 knockdown, since its nuclease activity is suppressed. In our case, the median coverage fraction for Scr1 and Scr2 are 81.90% and 80.99% (average = 81.45%), while in the knockdown samples they are 80.30% and 78.69% for dKD1 and dKD2 respectively (average = 79.50%). This demonstrates that in both conditions most reads covered most of the original RNA transcript lengths. However, we cannot observe a significant change of the median transcript coverage between the two conditions. Additionally, the number of full-length reads does not change significantly either between the two conditions, as can be seen in the Figure 2. 
+
+![Distribution of transcript coverage fraction. Dotted line represents 95% cutoff for full-length reads. Full-length reads are shaded in blue.](Coverage fraction.png){width=50%}
+
+When assessing the relationship between coverage fraction and known transcript length, it becomes apparent that longer transcripts were less likely to be aligned at full length. This can be seen in all conditions and there does not seem to be an observable difference between them.
+
+![Fraction of known transcript length covered by each read (coverage fraction) compared to known transcript length. Trend line was plotted using a generalized additive model, an extension of a generalised linear model where the linear form is replaced by sum of smooth functions.](density plot.png){width=70%}
+
+
+
+## Import Data
+*The code for importing the data is not shown for brevity purposes. The full code including the sections omitted here and in subsequent sections can be found in the [.qmd file](https://github.com/sta426hs2023/project-direct-rna-nmd/blob/main/STAT-GroupProject.qmd) in the repository.*
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+samples <- list.files("counts_files")
+
+raw_genomic <- sapply(samples, function(sample) {
+  file <- paste0("counts_files/", sample, "/","primary-genomic-quant")
+  quant <- read.table(file, header=TRUE, row.names=1, sep="\t")
+  gene_id <- rownames(quant)
+  raw <- quant[,6]
+  raw_counts <- setNames(raw, gene_id)
+  return(raw_counts)
+})
+
+raw_genomic <- as.data.frame(raw_genomic)
+
+raw_genomic <- raw_genomic %>%
+  rownames_to_column(var = "gene_name") %>%
+  arrange(gene_name) %>%
+  column_to_rownames(var = "gene_name")
+
+np05_tcrm = read.table(file="counts_files/NP05-Scr1/transcriptomic-quant.tsv", sep = '\t', header = TRUE)
+```
+
+We are working with direct RNA long-reads. The output from NanoCount are estimated counts (est_count) and transcripts per million (tpm). These metrics are not normalised by transcript length as it is usually done with Illumina data because in DRS one read is supposed to represent a single transcript molecule starting from the polyA tail, even if the fragment does not extend to the 5' end. 
+
+Est_count is obtained by multiplying the raw abundance by the number of primary alignments, the latter is the estimated counts obtained by multiplying the raw abundance by 10^6. It was decided to use tpm for the subsequent analyses. 
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+np05_tcrm = data.frame(transcript_name = np05_tcrm$transcript_name, tpm_np05 = np05_tcrm$tpm)
+
+np06_tcrm = read.table(file = 'counts_files/NP06-dKD1/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np06_tcrm = data.frame(transcript_name = np06_tcrm$transcript_name, tpm_np06 = np06_tcrm$tpm)
+
+np07_tcrm = read.table(file = 'counts_files/NP07-dKD2/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np07_tcrm = data.frame(transcript_name = np07_tcrm$transcript_name, tpm_np07 = np07_tcrm$tpm)
+
+np08_tcrm = read.table(file = 'counts_files/NP08-Scr2/transcriptomic-quant.tsv', sep = '\t', header = TRUE)
+np08_tcrm = data.frame(transcript_name = np08_tcrm$transcript_name, tpm_np08 = np08_tcrm$tpm)
+
+tpm_transcriptome <- Reduce(function(x, y) merge(x, y, by = "transcript_name", all = TRUE), list(np05_tcrm, np06_tcrm, np07_tcrm, np08_tcrm))
+
+
+# Rename columns to specify the dataset source
+tpm_transcriptome <- as.data.frame(tpm_transcriptome)
+tpm_transcriptome  <- tpm_transcriptome  %>%
+  arrange(transcript_name) %>%
+  column_to_rownames(var = "transcript_name")
+```
+
+## Exploratory Analysis
+
+Once the gene and transcript counts were obtained, an initial exploratory analysis was performed.
+
+```{r, warning=FALSE, message=FALSE}
+colSums(raw_genomic)
+colSums(tpm_transcriptome)
+```
+The samples exhibit the same number of transcript counts and number of total counts, whereas the raw genomic counts differ from the number of total counts.
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+#Therefore, a normalization with a scaling factor proportional to the ratio of counts was performed to have the same number of total counts between samples.
+median_all_counts = median(colSums(raw_genomic))
+scaling_factors = median(colSums(raw_genomic))/colSums(raw_genomic)
+normalised_genomic=sweep(raw_genomic, 2, scaling_factors, `*`)
+
+log_normalised_genomic=log1p(normalised_genomic)
+
+melted_data <- reshape2::melt(log_normalised_genomic)
+colnames(melted_data) <- c("sample","Log_normalised_expression")
+
+ggplot(melted_data, aes(x = sample, y = Log_normalised_expression, fill = sample)) +
+  geom_violin() +
+  labs(title = 'Distribution of Gene Expression Across Samples',
+       x = 'samples', y = 'Log expression') +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(NA, 2)
+
+#The visualization by the violin plots suggests that all samples have similar gene expression distributions.
+```
+
+
+```{r}
+avg_genomic <- rowMeans(raw_genomic)
+layout <- matrix(c(1, 2, 3, 4), nrow = 2, byrow = TRUE)
+
+theme_custom <- theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 5),
+    axis.text = element_text(size = 5),  # Adjust the size as needed
+    axis.title = element_text(size = 5)  # Optional: Adjust the size of axis titles
+  )
+
+plot_1 <- ggplot(data = as.data.frame(avg_genomic), mapping =  
+                   aes(x = avg_genomic)) +
+  geom_histogram(
+    color = "white",
+    fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 50
+  ) +
+  scale_x_continuous(
+    breaks = c(0, 1, 10, 100, 1000, 10000, 20000),
+    trans = "log1p",
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(breaks = c(0, 1, 10, 100, 1000, 10000),
+                     expand = c(0, 0),
+                     trans = "log1p") +
+  labs(title = "Distribution of Average Expression of All Genes",
+       x = "Average Number of Reads",
+       y = "Number of genes") +
+    theme_custom 
+
+
+num_detected_genes <- rowSums(raw_genomic > 0)
+
+plot_2 <- ggplot(data = as.data.frame(num_detected_genes), mapping =  
+                   aes(x = num_detected_genes)) +
+  geom_histogram(color = "white",fill = brewer.pal(n = 3, name = "Set1")[2],
+  bins = 23  ) +labs(title = "Number of Genes Detected per Sample",
+                     x = "Number of Samples", y = "Number of genes") +theme_custom 
+
+# filter expressed genes 
+# threshold: genes must be detected in at least half of the samples
+#            or the average counts must be >= 1
+
+expressed<-rowSums(raw_genomic)>=5
+num_filtered_expressed_genes<-rowSums(raw_genomic[expressed,]>0)
+
+avg_genomic <- data.frame(avg_genomic)
+plot_3 <- ggplot(data = as.data.frame(avg_genomic[expressed,]), mapping =  
+                   aes(x = avg_genomic[expressed,])) +
+  geom_histogram(color = "white",fill = brewer.pal(n = 3, name = "Set1")[2],
+    bins = 50) +
+  scale_x_continuous(breaks = c(0, 1, 10, 100, 1000, 10000, 20000),
+    trans = "log1p",expand = c(0, 0)) +
+  scale_y_continuous(breaks = c(0, 1, 10, 100, 1000, 10000),expand = c(0, 0),trans = "log1p") +
+  labs(title = "Distribution of Average Expression of All Genes After Filtering",
+       x = "Average Number of Reads",
+       y = "Nºgenes") + theme_custom 
+
+plot_4 <- ggplot(data = as.data.frame(num_filtered_expressed_genes), mapping =  
+                   aes(x = num_filtered_expressed_genes)) +
+  geom_histogram(color = "white",fill = brewer.pal(n = 3, name = "Set1")[2],bins = 23) +
+  labs(title = "Number of Genes Detected per Sample After Filtering",
+      x = "Number of Samples",y = "Number of genes") +theme_custom 
+
+grid.arrange(plot_1, plot_2, plot_3, plot_4, layout_matrix = layout)
+```
+
+In the plot to the left we can see the number of genes distributed by their average number of counts in logarithmic scale. Because the quantification of the genes in long reads are one read equivalent to one count, these two histograms display the number of genes distributed by the number of reads. The histograms to the left show that DRS is able to quantify certain genes with up to 10000 average counts (4 orders of magnitude), which indicates a good sensitivity for the quantification of gene expression.
+
+The genes were then filtered by removing those with a sum over the samples lower than 5 counts. By looking at the plots on the right side of the figure, we can observe that our filtering criteria filtered not only all the genes that were not expressed in any of the samples, but also most of the genes only expressed in one individual sample.
+
+```{r fig.width = 6, fig.height= 4, warning=FALSE, message=FALSE}
+#Plot heatmap
+corr_pearson <- cor(log1p(raw_genomic[expressed,]), method = "spearman")
+pheatmap(corr_pearson, main="Spearman Correlation Heatmap of Expressed 
+         Genomic Data",  cex.axis = 0.5, cex.lab = 0.5, cex.main = 0.5)
+```
+
+The heatmap clearly shows a correlation between the two control samples, as well as the knockdown samples, which indicates that there is a differential expression between the knockdown and the control. This again indicates that the NMD knockdown is causing a differential gene expression.
+
+
+## Differential Gene Expression Analysis
+
+```{r, warning=FALSE, message=FALSE}
+#DESeq input
+raw_genomic<- as.matrix(raw_genomic[expressed,])
+condition <- factor(c("control","knockdown","knockdown","control")) #NP05-Scr1, NP06-dKD1, NP07-dKD2, NP08-Scr2
+coldata <- data.frame(row.names=colnames(raw_genomic), condition)
+
+# Make DESeq dataset
+dds <- DESeqDataSetFromMatrix(countData=raw_genomic, colData=coldata, 
+                              design=~condition)
+
+# Run DESeq2 pipeline
+dds <- DESeq(dds)
+res <- DESeq2::results(dds)
+
+#DESeq2 results
+res <- res[order(res$padj), ]
+
+# Merge with normalized count data
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=TRUE)),
+                 by="row.names", sort=FALSE)
+names(resdata)[1] <- "Gene"
+resdata$DE <-resdata$padj<0.05
+```
+
+```{r fig.width = 4, fig.height= 4, warning=FALSE, message=FALSE}
+# Plot dispersions
+plotDispEsts(dds, main="Dispersion Plot", genecol = "black", fitcol = "cyan", finalcol = "blue", legend = TRUE)
+```
+
+A trend can be observed that dispersion decreases as the mean of normalized counts increases, which is typical in RNA-seq data due to biological variability being more pronounced in genes with low expression levels.
+The model (fitted line) captures the overall trend of the dispersion estimates well, as indicated by the fitted points that closely follow the line.
+
+```{r fig.width = 4, fig.height= 4, warning=FALSE, message=FALSE}
+rld <- rlogTransformation(dds) #applies a regularized log transformation to the dds(DESeqDataSet)
+
+#Set colours for plotting
+mycols <- brewer.pal(8, "Accent")[1:length(unique(condition))]
+
+# PCA
+rld_pca <- function(rld, intgroup = "condition", ntop = 500, colors = NULL, legendpos = "topright", 
+                    main = "PCA of Normalized Log-Fold Change of DE Genes", textcx = 1, ...) {
+  
+  rv <- rowVars(assay(rld))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+  pca <- prcomp(t(assay(rld)[select, ]))
+  fac <- factor(apply(as.data.frame(colData(rld)[, intgroup, drop = FALSE]), 1, paste, collapse = " : "))
+  
+  pc1var <- round(summary(pca)$importance[2, 1] * 100, digits = 1)
+  pc2var <- round(summary(pca)$importance[2, 2] * 100, digits = 1)
+  pc1lab <- paste0("PC1: ", as.character(pc1var), "% variance")
+  pc2lab <- paste0("PC2: ", as.character(pc2var), "% variance")
+  
+  
+  plot(PC2 ~ PC1, data = as.data.frame(pca$x), bg = colors[fac], pch = 21, xlab = pc1lab, 
+       ylab = pc2lab, main = main, cex.axis = 0.7, cex.lab = 0.7, ...)
+  
+  with(as.data.frame(pca$x), textxy(PC1, PC2, labs = rownames(pca$x), cex = textcx)) 
+  legend(legendpos, legend = levels(fac), col = colors, cex = 0.7, pch = 20)
+}
+
+rld_pca(rld, colors = mycols, intgroup = "condition", xlim = c(-15, 20), ylim = c(-10, 10), 
+        cex.main = 0.8, textcx = 0.7)
+```
+
+PCA further confirms that there is little variability between the biological replicates but high variability between the gene expression of control and knockdown samples. This indicates that the DRS long-reads are capturing the variability of the NMD knockdown at a gene expression level.
+
+```{r fig.width = 6, fig.height= 3, warning=FALSE, message=FALSE}
+# MA Plot
+maplot <- function (res, thresh = 0.05, xlab = "Base Mean", ylab = "log2(Fold-Change)", labelsig = FALSE, 
+                    textcx = 1, ...) {
+  with(res, plot(baseMean, log2FoldChange, pch = 20, cex.axis = 0.7, cex.lab = 0.7, log = "x", ...))
+  with(subset(res, padj < thresh), points(baseMean, log2FoldChange, col = "blue", pch = 20, cex = 1))
+  if (labelsig) {
+    require(calibrate)
+    with(subset(res, padj < thresh), textxy(baseMean, log2FoldChange, labs = Gene, cex = textcx, col = 2))
+  }
+}
+
+# Volcano Plot
+volcanoplot <- function (res, lfcthresh = 2, sigthresh = 0.05, xlab = "log2(Fold-Change)", 
+                         legendpos = "topright", labelsig = FALSE, textcx = 1.5, ...) {
+  with(res, plot(log2FoldChange, -log10(pvalue), pch = 20, xlab = xlab, cex.axis = 0.7, 
+                cex.lab = 0.7, ...))  # Adjust cex.axis and cex.lab
+  with(subset(res, padj < sigthresh), points(log2FoldChange, -log10(pvalue), pch = 20, col = "blue", ...))
+  with(subset(res, abs(log2FoldChange) > lfcthresh), points(log2FoldChange, -log10(pvalue), pch = 20, 
+                                                            col = "orange", ...))
+  with(subset(res, padj < sigthresh & abs(log2FoldChange) > lfcthresh), points(log2FoldChange, 
+                                                        -log10(pvalue), pch = 20, col = "green", ...))
+  legend(legendpos, xjust = 1, yjust = 1, legend = c(paste("p-adj<", sigthresh, sep = ""), 
+                                                     paste("|log2(FC)|>", lfcthresh, sep = ""), "both"), 
+         cex = 0.6, pch = 20, col = c("blue", "orange", "green"))  # Adjust cex
+}
+
+# Set up the layout
+par(mfrow = c(1, 2), mar = c(4, 3, 3, 2) + 0.1)
+
+# Plot MA Plot
+maplot(resdata, main = "MA Plot", cex.main = 0.8)
+
+# Plot Volcano Plot
+volcanoplot(resdata, lfcthresh = 2, sigthresh = 0.05, xlim = c(-6, 6), ylim = c(0, 33), 
+            legendpos = "topright", main="Volcano plot", cex.main = 0.8)
+
+# Reset the par settings to default after plotting
+par(mfrow = c(1, 1), mar = c(4, 3, 3, 2) + 0.1)
+```
+
+# Differential Isoform Usage Analysis
+
+A differential isoform usage analysis between the control and the knockdown with IsoformSwitchAnalyzeR was run. 
+This analysis is done to identify genes whose isoform abundances change due to the dKD of SMG6 and SMG7. Therefore, the identified isoforms should be direct or indirectly NMD sensitive. Indirectly NMD sensitive would refer to transcripts that are regulated by an NMD sensitive factor and the non-degradation of the NMD sensitive factor would lead to a change in the expression of that isoform.
+
+```{r, warning=FALSE, message=FALSE}
+sampleID = c("tpm_np05","tpm_np06","tpm_np07","tpm_np08")
+myDesign = data.frame(sampleID= sampleID, condition = condition)
+tpm_transcriptome$isoform_id <- rownames(tpm_transcriptome)
+
+aSwitchList <-  importRdata(
+  isoformCountMatrix   = tpm_transcriptome,
+  isoformRepExpression = tpm_transcriptome,
+  designMatrix         = myDesign,
+  isoformExonAnnoation = "files/Homo_sapiens.GRCh38.110.chr_patch_hapl_scaff.gtf",
+  isoformNtFasta       = "files/transcriptome_reference.fa",
+  showProgress = FALSE
+)
+
+SwitchListFiltered <- preFilter(
+  switchAnalyzeRlist = aSwitchList,
+  geneExpressionCutoff = 5,
+  isoformExpressionCutoff = 5,
+  removeSingleIsoformGenes = TRUE)
+
+SwitchListAnalyzed <- isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE,
+  reduceFurtherToGenesWithConsequencePotential = FALSE,
+  alpha = 0.05,
+  dIFcutoff = 0.1,
+  onlySigIsoforms = FALSE
+)
+
+extractSwitchSummary(SwitchListAnalyzed)
+summary_isoforms <- SwitchListAnalyzed$isoformFeatures
+```
+The DIU identified `r nrow(summary_isoforms)` transcripts with differential isoform usage. 
+
+From the output of the IsoformSwitchAnalyzeR, a dataset was obtained where one of the columns classifies the isoforms according to the biological function (labelled as "nonsense_mediated_decay" in $iso_biotype). This classification is based on the [gencode annotation](https://www.gencodegenes.org/pages/biotypes.html). The way in which IsoformSwitchAnalyzeR classifies transcripts as NMD-sensitive is described in the documentation: "If the coding sequence (following the appropriate reference) of a transcript finishes >50bp from a downstream splice site then it is tagged as NMD. If the variant does not cover the full reference coding sequence then it is annotated as NMD if NMD is unavoidable i.e. no matter what the exon structure of the missing portion is the transcript will be subject to NMD."
+
+Although, all the differentially used isoforms obtained by the DIU analysis should be classified as NMD sensitive, the number of transcripts classified by the gencode annotation is only `r sum(summary_isoforms$iso_biotype == "nonsense_mediated_decay")`. 
+This difference might arise due to the classification used in IsoformSwitchAnalyzeR, which is not necessarily correct. 
+
+For that reason, the results were also compared to a list of high confidence NMD-transcripts which were identified by Karousis et al [@karousis2021nanopore].
+
+```{r, warning=FALSE, message=FALSE}
+new_nmd = read.csv(file = 'NMD_exons_to_long_reads_transcriptome_mapping.csv',
+                   sep = ',', header = TRUE)
+```
+In the list of high confidence NMD-transcripts, `r nrow(new_nmd)` transcripts are identified.
+The reference transcriptome that was built and used in their study was unavailable, which is why it was not possible to identify those transcripts they identified in addition to those from ENSEMBL. These isoforms were labelled as "MSTRG*" and were thus filtered out.
+
+```{r}
+filtered_new_nmd <- new_nmd[grepl("^ENST", new_nmd$transcript_id), ]
+summary_isoforms$isoform_id <- sub("\\..*", "", summary_isoforms$isoform_id)
+```
+
+A Venn Diagram is displayed to quantify the overlap between the 3 different classifications
+```{r fig.width = 4, fig.height= 3, message=FALSE}
+
+unique_transcripts <- unique(filtered_new_nmd$transcript_id)
+unique_isoforms <- unique(summary_isoforms$isoform_id)
+
+all_unique_ids <- unique(c(unique_transcripts, unique_isoforms))
+
+merged_transcripts <- data.frame(row.names = all_unique_ids)
+
+merged_transcripts$High_confidence_Isoforms <- FALSE
+merged_transcripts$DIU <- FALSE
+merged_transcripts$Gencode_annotated_NMD <- FALSE
+
+merged_transcripts[rownames(merged_transcripts) %in% filtered_new_nmd$transcript_id, 
+                   "High_confidence_Isoforms"] <- TRUE
+
+merged_transcripts[rownames(merged_transcripts) %in% summary_isoforms$isoform_id, "DIU"] <- TRUE
+
+nonsense_mediated_decay_ids <- summary_isoforms$isoform_id[summary_isoforms$iso_biotype == "nonsense_mediated_decay"]
+merged_transcripts[rownames(merged_transcripts) %in% nonsense_mediated_decay_ids, 
+                   "Gencode_annotated_NMD"] <- TRUE
+
+x<-vennCounts(merged_transcripts)
+vennDiagram(x, cex = 0.8)
+```
+
+To validate that the identification of genes is somewhat meaningful, the presence of BAG1 was corroborated, which is a gene that is known to be differentially spliced and thus produces different isoforms under dKD conditions. [@karousis2021nanopore]
+```{r}
+"BAG1" %in% summary_isoforms$gene_id
+```
+
+## Splicing Analysis
+
+Furthermore, SplAdder [@kahles2016spladder] was used to perform a splicing analysis similar to [@karousis2021nanopore]. SplAdder first generates a splicing graph based on the RNA sequencing data and extracts alternative splicing events (compared to the reference genome). The detected splicing events correspond to single or multiple skipped exons, intron retentions, alternative 3' or 5' splicing, and mutually exclusive exons. In a second step, it runs a differential test in order to find events that occur with a significantly different frequency in the knockdown samples compared to wildtype.
+
+```{bash, eval=FALSE}
+python -m spladder.spladder build --annotation $annotationFile \
+                                  --bams $wt1,$wt2,$kd1,$kd2 \
+                                  --outdir $outFolder
+
+python -m spladder.spladder test \
+              --conditionA $wt1,$wt2 \
+              --conditionB $kd1,$kd2 \
+              --parallel 24 \
+              --outdir $outFolder
+```
+
+SplAdder can then be used to confirm different splicing behavior previously reported in literature. One example is the apoptosis-modulating Bcl-2-associated athanogene-1 (BAG-1). [@karousis2021nanopore] reported that a BAG1 isoform with an included alternative exon is stabilized upon NMD inhibition. Using our data and our pipeline, we can confirm this.
+
+```{bash, eval=FALSE}
+python -m spladder.spladder viz \
+              --range gene ENSG00000107262 \
+              --track coverage wildtype:$wt1,$wt2 knockdown:$kd1,$kd2 \
+              --track event exon_skip \
+              -O plot --format png \
+              --outdir $outFolder
+```
+
+![SplAdder Analysis of the BAG-1 Gene. One can observe that an alternative isoform is predominant in the knockdown sample, an observation that is in line with previous literature.](splicing/plot.png){#fig-bag1}
+
+```{r, include=FALSE}
+# some further experiments on the SplAdder analysis that we excluded after discussion with an expert, as they were not deemed biologically relevant.
+# most notably, the distribution of detected event types does not match previous findings, e.g. in
+# Karousis et. al.
+
+# we load all by SplAdder detected events and merge them into one table
+alt_3prime <- as.data.frame(read.table("splicing/test_results_C3_alt_3prime.tsv", 
+                                       sep = "\t", header = TRUE))
+alt_5prime <- as.data.frame(read.table("splicing/test_results_C3_alt_5prime.tsv", 
+                                       sep = "\t", header = TRUE))
+exon_skip <- as.data.frame(read.table("splicing/test_results_C3_exon_skip.tsv", sep = "\t", 
+                                      header = TRUE))
+intron_retention <- as.data.frame(read.table("splicing/test_results_C3_intron_retention.tsv", sep = "\t", 
+                                             header = TRUE))
+mult_exon_skip <- as.data.frame(read.table("splicing/test_results_C3_mult_exon_skip.tsv", sep = "\t", 
+                                           header = TRUE))
+mutex_exons <- as.data.frame(read.table("splicing/test_results_C3_mutex_exons.tsv", sep = "\t", 
+                                        header = TRUE))
+
+splicing_events <- Reduce(function(x, y) merge(x, y, all=TRUE), list(
+  transform(alt_3prime, Type="alt_3prime"),
+  transform(alt_5prime, Type="alt_5prime"),
+  transform(exon_skip, Type="exon_skip"),
+  transform(intron_retention, Type="intron_retention"),
+  transform(mult_exon_skip, Type="mult_exon_skip"),
+  transform(mutex_exons, Type="mutex_exons")
+))
+
+splicing_events <- splicing_events[splicing_events$p_val_adj < 0.05,]
+
+event_counts_per_event_type <- splicing_events %>%
+  group_by(Type) %>%
+  summarise(UniqueCount = n_distinct(event_id))
+
+gene_counts_per_event_type <- splicing_events %>%
+  group_by(Type) %>%
+  summarise(UniqueCount = n_distinct(gene_id))
+
+events <- ggplot(event_counts_per_event_type, aes(x = Type, y = UniqueCount)) +
+  geom_bar(stat = "identity") +
+  ylim(0, 150) + 
+  labs(x = "Splicing Event Type",
+       y = "Number of Events") +
+  theme_minimal(base_size = 8) +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+genes <- ggplot(gene_counts_per_event_type, aes(x = Type, y = UniqueCount)) +
+  ylim(0, 150) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Splicing Event Type",
+       y = "Number of Genes With Events") +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  theme_minimal(base_size = 8)
+
+ggarrange(events, genes, ncol = 2, nrow = 1)
+```
+
+## Discovery of New Isoforms
+
+FLAIR [@flair] and gffcompare [@gffcompare] were used to detect new isoforms in the sequences of the knockdown samples when compared to the reference annotation.
+
+```{bash, eval=FALSE}
+python -m flair.flair correct \
+--gtf $annotationFile \
+--genome $referenceFile \
+--query $experimentFolder/alignments/primary-genomic-aln.bed12 \
+--output $experimentFolder/flair/correct
+
+python -m flair.flair collapse \
+--gtf $annotationFile \
+--reads $rawReads \
+--genome $referenceFile \
+--query $experimentFolder/flair/correct_all_corrected.bed \
+--trust_ends \
+--stringent \
+--threads 16 \
+--output $experimentFolder/flair/collapse
+
+/cluster/home/ochsneto/gffcompare-0.12.6.Linux_x86_64/gffcompare -r $annotationFile \ 
+-o $experimentFolder/flair/gffcompare -V $experimentFolder/flair/collapse.isoforms.gtf
+```
+
+Flair detects high-confidence isoforms solely based on aligned reads. As it does not rely on a reference annotation, it allows for the detection of novel isoforms. The analysis resulted in 241 novel exons as compared to the Ensembl reference transcriptome used for our mapping (see @tbl-flair). As discussed above, DRS has the power to obtain This confirms that DRS long-read sequencing has the power to detect previously unknown transcript variations.
+
+| Type | Result |
+|-----|-----|
+| Missed exons | 477423/666967 (71.6%) |
+| Novel exons | 241/81798 (0.3%) |
+| Missed introns | 282313/402495 (70.1%) |
+| Novel introns | 0/73365 (0.0%) |
+| Missed loci | 49706/57652 (86.2%) |
+| Novel loci | 228/8579 (2.7%) |
+: Results of the FLAIR analysis comparing the isoforms in the knockdown samples with the reference transcriptome. {#tbl-flair}
+
+# Conclusion
+
+The goal was to assess if direct RNA sequencing can be used to explore NMD-sensitive mRNAs in human cells. We wanted to assess if this approach corroborates the results obtained by the analysis of Karousis et al [@karousis2021nanopore], but by using DRS instead of a combination of short-read and long-read sequencing. 
+
+The differential gene expression analysis showed differences between the dKD and the Scr samples, as well as a clear separation in the dimensionality reduction by PCA. Since NMD targets mRNAs based on their features and not their biological role, a functional enrichment analysis was not considered essential.
+
+The efficiency of our pipeline is confirmed by the fact that we detect a signature NMD-sensitive exon that was discovered with the previous combined work. According to our analysis we detect new exons that could be further verified. However, an early filtering step reduces significantly the number of expressed genes, pointing out that probably RNA sequencing alone is not sufficient to provide an in-depth analysis of the NMD transcriptome. 
+
+Even though the `r nrow(summary_isoforms)` transcripts that are identified by DIU are treated as NMD-sensitive transcripts, this is not a correct assumption. Since NMD not only targets aberrant mRNA (primary targets), but is also involved in posttranscriptional gene regulation by degrading mRNAs that would code for e.g. splicing factors (secondary targets), such differentially expressed isoforms could also arise due to the increase in expression of otherwise regulated secondary targets. To assess those isoforms, however, in addition to the dKD and Scr experiments a rescue experiment would have to be performed. 
+
+By comparing the three methods of annotating transcripts as NMD-sensitive, 93 of them were observed in both the list of highly confident NMD-sensitive isoforms of Karousis et al, the Gencode annotation and our DIU analysis, reflecting the need to reconsider the usage of long RNA sequencing alone to perform an in-depth NMD analysis.  
+
+# References

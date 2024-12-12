@@ -1,0 +1,12 @@
+Sample,NP06_BamSlam_output
+Total number of reads,1151174
+Number of reads representing full-length transcripts,302340
+Percentage of reads representing full-length transcripts,26.2636230491655
+Median coverage fraction of transcripts (primary alignments),0.8029791006922
+Median alignment length (primary alignments),1059
+Median accuracy (primary alignments),82.7717736808646
+Number of reads with no secondary alignments,223257
+Percentage of reads with no secondary alignments,19.3938535790419
+Number of unique transcripts identified,48425
+Median coverage fraction of all unique transcripts,0.650446066504461
+Median length of all unique transcripts identified,2538
